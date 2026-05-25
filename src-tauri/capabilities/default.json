@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for yadig",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "sql:default",
+    "sql:allow-execute",
+    "sql:allow-select",
+    "store:default",
+    "notification:default"
+  ]
+}

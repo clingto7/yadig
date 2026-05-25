@@ -1,0 +1,30 @@
+[package]
+name = "yadig"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "yadig_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+async-trait = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+scraper = "0.22"
+rss = "2"
+atom_syndication = "0.12"
+url = "2"

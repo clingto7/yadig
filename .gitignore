@@ -1,0 +1,41 @@
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+._*
+*~
+
+# Environment / Secrets
+.env
+.env.local
+secrets/
+*.key
+*.p12
+
+# Database (local dev)
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Build
+build/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

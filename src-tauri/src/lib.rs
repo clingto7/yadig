@@ -1,0 +1,59 @@
+mod commands;
+mod error;
+mod source;
+
+use source::registry::SourceRegistry;
+use source::rss::pitchfork::PitchforkSource;
+use source::api::discogs::DiscogsSource;
+use source::scraper::bandcamp::BandcampSource;
+use source::scraper::albumoftheyear::AlbumOfTheYearSource;
+use tauri_plugin_sql::{Migration, MigrationKind};
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let migrations = vec![
+        Migration {
+            version: 1,
+            description: "create_initial_tables",
+            sql: include_str!("../migrations/001_initial_schema.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "create_search_history",
+            sql: include_str!("../migrations/002_search_history.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "create_rss_feeds",
+            sql: include_str!("../migrations/003_rss_feeds.sql"),
+            kind: MigrationKind::Up,
+        },
+    ];
+
+    let mut registry = SourceRegistry::new();
+
+    // Register built-in sources
+    registry.register(Box::new(PitchforkSource::new()));
+    registry.register(Box::new(DiscogsSource::new(None, None)));
+    registry.register(Box::new(BandcampSource::new()));
+    registry.register(Box::new(AlbumOfTheYearSource::new()));
+
+    tauri::Builder::default()
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations("sqlite:yadig.db", migrations)
+                .build(),
+        )
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
+        .manage(registry)
+        .invoke_handler(tauri::generate_handler![
+            commands::search::search_sources,
+            commands::search::fetch_latest,
+            commands::search::list_sources,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running yadig");
+}
