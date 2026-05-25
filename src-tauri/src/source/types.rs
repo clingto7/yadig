@@ -41,8 +41,6 @@ pub struct Source {
     pub name: String,
     pub kind: SourceKind,
     pub base_url: String,
-    /// Source-specific configuration (e.g., API key, RSS feed URL, CSS selectors)
-    pub config: serde_json::Value,
     pub is_active: bool,
 }
 
@@ -60,6 +58,13 @@ pub struct ContentItem {
     pub extra: Option<serde_json::Value>,
 }
 
+/// Pagination info for a search result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchPage {
+    pub page: usize,
+    pub has_more: bool,
+}
+
 /// A search result across sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -67,4 +72,5 @@ pub struct SearchResult {
     pub items: Vec<ContentItem>,
     pub total_results: usize,
     pub elapsed_ms: u64,
+    pub page: SearchPage,
 }

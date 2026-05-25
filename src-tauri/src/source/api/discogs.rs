@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use crate::config::DiscogsKeys;
 use crate::error::{Result, YadigError};
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
@@ -7,39 +8,30 @@ use crate::source::types::*;
 /// Docs: https://www.discogs.com/developers
 pub struct DiscogsSource {
     client: reqwest::Client,
-    consumer_key: Option<String>,
-    consumer_secret: Option<String>,
+    keys: DiscogsKeys,
 }
 
 impl DiscogsSource {
-    pub fn new(consumer_key: Option<String>, consumer_secret: Option<String>) -> Self {
+    pub fn new(keys: DiscogsKeys) -> Self {
         let client = reqwest::Client::builder()
             .user_agent("yadig/0.1.0 (music discovery)")
             .build()
             .expect("Failed to build HTTP client");
-        Self {
-            client,
-            consumer_key,
-            consumer_secret,
-        }
+        Self { client, keys }
     }
 
-    fn auth_header(&self) -> Option<String> {
-        // Discogs uses key/secret in query params, not headers
-        None
-    }
-
-    fn search_url(&self, query: &str, r#type: &str, limit: usize) -> String {
+    fn search_url(&self, query: &str, r#type: &str, limit: usize, page: usize) -> String {
         let mut url = format!(
-            "https://api.discogs.com/database/search?q={}&type={}&per_page={}",
+            "https://api.discogs.com/database/search?q={}&type={}&per_page={}&page={}",
             urlencoding::encode(query),
             r#type,
-            limit
+            limit,
+            page
         );
-        if let Some(key) = &self.consumer_key {
+        if let Some(key) = &*self.keys.key.read().unwrap() {
             url.push_str(&format!("&key={}", key));
         }
-        if let Some(secret) = &self.consumer_secret {
+        if let Some(secret) = &*self.keys.secret.read().unwrap() {
             url.push_str(&format!("&secret={}", secret));
         }
         url
@@ -51,9 +43,10 @@ impl SourceProvider for DiscogsSource {
     fn id(&self) -> &str { "discogs" }
     fn name(&self) -> &str { "Discogs" }
     fn kind(&self) -> SourceKind { SourceKind::Api }
+    fn base_url(&self) -> &str { "https://www.discogs.com" }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ContentItem>> {
-        let url = self.search_url(query, "release", limit);
+    async fn search(&self, query: &str, limit: usize, page: usize) -> Result<Vec<ContentItem>> {
+        let url = self.search_url(query, "release", limit, page);
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
@@ -110,53 +103,7 @@ impl SourceProvider for DiscogsSource {
 
     async fn fetch_latest(&self, _limit: usize) -> Result<Vec<ContentItem>> {
         // Discogs API doesn't have a "latest" endpoint — return empty
-        // User would need to search by keyword or browse specific lists
         Ok(Vec::new())
-    }
-
-    async fn get_item(&self, url: &str) -> Result<ContentItem> {
-        // Extract release ID from URL and fetch details
-        let id = url.split('/').last().ok_or_else(|| {
-            YadigError::NotFound(format!("Invalid Discogs URL: {}", url))
-        })?;
-
-        let mut api_url = format!("https://api.discogs.com/releases/{}", id);
-        if let Some(key) = &self.consumer_key {
-            api_url.push_str(&format!("?key={}", key));
-        }
-        if let Some(secret) = &self.consumer_secret {
-            api_url.push_str(&format!("&secret={}", secret));
-        }
-
-        let response = self.client.get(&api_url).send().await?;
-
-        if !response.status().is_success() {
-            return Err(YadigError::Discogs(format!(
-                "API error fetching release {}", id
-            )));
-        }
-
-        let data: serde_json::Value = response.json().await?;
-
-        let title = data["title"].as_str().unwrap_or("Unknown").to_string();
-        let artist = data["artists"].as_array()
-            .and_then(|a| a.first())
-            .and_then(|a| a["name"].as_str())
-            .map(String::from);
-
-        Ok(ContentItem {
-            source_id: "discogs".to_string(),
-            title,
-            url: url.to_string(),
-            summary: None,
-            author: artist,
-            published_at: data["year"].as_str().map(String::from),
-            image_url: data["images"].as_array()
-                .and_then(|imgs| imgs.first())
-                .and_then(|img| img["uri"].as_str())
-                .map(String::from),
-            extra: Some(data),
-        })
     }
 }
 

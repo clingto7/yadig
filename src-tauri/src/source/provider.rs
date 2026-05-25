@@ -15,12 +15,12 @@ pub trait SourceProvider: Send + Sync {
     /// What kind of source this is
     fn kind(&self) -> SourceKind;
 
+    /// Base URL of this source (for display and link generation)
+    fn base_url(&self) -> &str;
+
     /// Search for content matching the query
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ContentItem>>;
+    async fn search(&self, query: &str, limit: usize, page: usize) -> Result<Vec<ContentItem>>;
 
     /// Fetch the latest content (for feed/timeline view)
     async fn fetch_latest(&self, limit: usize) -> Result<Vec<ContentItem>>;
-
-    /// Fetch a specific item by URL
-    async fn get_item(&self, url: &str) -> Result<ContentItem>;
 }

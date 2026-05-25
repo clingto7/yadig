@@ -19,9 +19,15 @@ export interface ContentItem {
   extra?: Record<string, unknown>;
 }
 
+export interface SearchPage {
+  page: number;
+  hasMore: boolean;
+}
+
 export interface SearchResult {
   query: string;
   items: ContentItem[];
   totalResults: number;
   elapsedMs: number;
+  page: SearchPage;
 }

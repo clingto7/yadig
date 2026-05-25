@@ -25,8 +25,9 @@ impl SourceProvider for AlbumOfTheYearSource {
     fn id(&self) -> &str { "albumoftheyear" }
     fn name(&self) -> &str { "Album of the Year" }
     fn kind(&self) -> SourceKind { SourceKind::Scraper }
+    fn base_url(&self) -> &str { "https://www.albumoftheyear.org" }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ContentItem>> {
+    async fn search(&self, query: &str, limit: usize, _page: usize) -> Result<Vec<ContentItem>> {
         let url = format!("https://www.albumoftheyear.org/search?q={}", query);
         let response = self.client.get(&url).send().await?;
 
@@ -39,7 +40,6 @@ impl SourceProvider for AlbumOfTheYearSource {
         let body = response.text().await?;
         let document = scraper::Html::parse_document(&body);
 
-        // AOTY search results are in .albumBlock or similar containers
         let selector = scraper::Selector::parse(".albumBlock, .album-block, .search-item")
             .map_err(|_| YadigError::Feed("CSS selector parse error".into()))?;
 
@@ -137,29 +137,5 @@ impl SourceProvider for AlbumOfTheYearSource {
             .collect();
 
         Ok(items)
-    }
-
-    async fn get_item(&self, url: &str) -> Result<ContentItem> {
-        let response = self.client.get(url).send().await?;
-        let body = response.text().await?;
-        let document = scraper::Html::parse_document(&body);
-
-        let title = document.select(
-            &scraper::Selector::parse("title").map_err(|_| YadigError::Feed("selector error".into()))?
-        )
-            .next()
-            .map(|el| el.text().collect::<Vec<_>>().join(" "))
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        Ok(ContentItem {
-            source_id: "albumoftheyear".to_string(),
-            title,
-            url: url.to_string(),
-            summary: None,
-            author: None,
-            published_at: None,
-            image_url: None,
-            extra: None,
-        })
     }
 }

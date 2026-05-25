@@ -1,7 +1,9 @@
 mod commands;
+mod config;
 mod error;
 mod source;
 
+use config::DiscogsKeys;
 use source::registry::SourceRegistry;
 use source::rss::pitchfork::PitchforkSource;
 use source::api::discogs::DiscogsSource;
@@ -33,10 +35,11 @@ pub fn run() {
     ];
 
     let mut registry = SourceRegistry::new();
+    let discogs_keys = DiscogsKeys::new();
 
     // Register built-in sources
     registry.register(Box::new(PitchforkSource::new()));
-    registry.register(Box::new(DiscogsSource::new(None, None)));
+    registry.register(Box::new(DiscogsSource::new(discogs_keys.clone())));
     registry.register(Box::new(BandcampSource::new()));
     registry.register(Box::new(AlbumOfTheYearSource::new()));
 
@@ -49,10 +52,13 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .manage(registry)
+        .manage(discogs_keys)
         .invoke_handler(tauri::generate_handler![
             commands::search::search_sources,
             commands::search::fetch_latest,
             commands::search::list_sources,
+            commands::search::set_source_enabled,
+            commands::search::update_discogs_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");

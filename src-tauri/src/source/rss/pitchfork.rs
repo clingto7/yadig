@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use crate::error::{Result, YadigError};
+use crate::error::Result;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
 
@@ -23,57 +23,7 @@ impl PitchforkSource {
             .expect("Failed to build HTTP client");
         Self { client, feed_urls }
     }
-}
 
-#[async_trait]
-impl SourceProvider for PitchforkSource {
-    fn id(&self) -> &str { "pitchfork" }
-    fn name(&self) -> &str { "Pitchfork" }
-    fn kind(&self) -> SourceKind { SourceKind::Rss }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ContentItem>> {
-        // RSS doesn't support search natively — fetch latest and filter by keyword
-        let items = self.fetch_latest(100).await?;
-        let query_lower = query.to_lowercase();
-        let filtered: Vec<ContentItem> = items
-            .into_iter()
-            .filter(|item| {
-                item.title.to_lowercase().contains(&query_lower)
-                    || item.summary.as_ref().map_or(false, |s| s.to_lowercase().contains(&query_lower))
-            })
-            .take(limit)
-            .collect();
-        Ok(filtered)
-    }
-
-    async fn fetch_latest(&self, limit: usize) -> Result<Vec<ContentItem>> {
-        let mut all_items = Vec::new();
-
-        for feed_url in &self.feed_urls {
-            match self.fetch_feed(feed_url).await {
-                Ok(items) => all_items.extend(items),
-                Err(e) => eprintln!("Pitchfork RSS error for {}: {}", feed_url, e),
-            }
-        }
-
-        all_items.sort_by(|a, b| {
-            b.published_at.cmp(&a.published_at)
-        });
-        all_items.truncate(limit);
-
-        Ok(all_items)
-    }
-
-    async fn get_item(&self, url: &str) -> Result<ContentItem> {
-        // Fetch all and find by URL — RSS doesn't have item-level fetch
-        let items = self.fetch_latest(200).await?;
-        items.into_iter()
-            .find(|item| item.url == url)
-            .ok_or_else(|| YadigError::NotFound(format!("Item not found: {}", url)))
-    }
-}
-
-impl PitchforkSource {
     async fn fetch_feed(&self, feed_url: &str) -> Result<Vec<ContentItem>> {
         let response = self.client.get(feed_url).send().await?;
         let body = response.text().await?;
@@ -114,5 +64,46 @@ impl PitchforkSource {
         };
 
         Ok(items)
+    }
+}
+
+#[async_trait]
+impl SourceProvider for PitchforkSource {
+    fn id(&self) -> &str { "pitchfork" }
+    fn name(&self) -> &str { "Pitchfork" }
+    fn kind(&self) -> SourceKind { SourceKind::Rss }
+    fn base_url(&self) -> &str { "https://pitchfork.com" }
+
+    async fn search(&self, query: &str, limit: usize, _page: usize) -> Result<Vec<ContentItem>> {
+        // RSS doesn't support search natively — fetch latest and filter by keyword
+        let items = self.fetch_latest(100).await?;
+        let query_lower = query.to_lowercase();
+        let filtered: Vec<ContentItem> = items
+            .into_iter()
+            .filter(|item| {
+                item.title.to_lowercase().contains(&query_lower)
+                    || item.summary.as_ref().map_or(false, |s| s.to_lowercase().contains(&query_lower))
+            })
+            .take(limit)
+            .collect();
+        Ok(filtered)
+    }
+
+    async fn fetch_latest(&self, limit: usize) -> Result<Vec<ContentItem>> {
+        let mut all_items = Vec::new();
+
+        for feed_url in &self.feed_urls {
+            match self.fetch_feed(feed_url).await {
+                Ok(items) => all_items.extend(items),
+                Err(e) => eprintln!("Pitchfork RSS error for {}: {}", feed_url, e),
+            }
+        }
+
+        all_items.sort_by(|a, b| {
+            b.published_at.cmp(&a.published_at)
+        });
+        all_items.truncate(limit);
+
+        Ok(all_items)
     }
 }
