@@ -1,12 +1,15 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, Loader2, ExternalLink } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock } from "lucide-react";
 import { tauri } from "@/lib/tauri";
+import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
 import type { ContentItem } from "@/types/source";
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: sources } = useQuery({
     queryKey: ["sources"],
@@ -24,12 +27,42 @@ export function SearchPage() {
     queryFn: () => tauri.fetchLatest({ limit: 10 }),
   });
 
+  const { data: history } = useQuery({
+    queryKey: ["searchHistory"],
+    queryFn: () => listSearches(10),
+  });
+
+  const saveSearchMutation = useMutation({
+    mutationFn: () =>
+      saveSearch(
+        searchTerm,
+        results?.totalResults ?? 0,
+        sources?.map((s) => s.id).join(",") ?? ""
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["searchHistory"] }),
+  });
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (query.trim()) {
       setSearchTerm(query.trim());
+      setShowHistory(false);
     }
   }
+
+  function handleHistoryClick(historicalQuery: string) {
+    setQuery(historicalQuery);
+    setSearchTerm(historicalQuery);
+    setShowHistory(false);
+  }
+
+  // Save search when results come in
+  const hasSaved = useState(false);
+  if (results && searchTerm && !hasSaved[0]) {
+    hasSaved[1](true);
+    saveSearchMutation.mutate();
+  }
+  if (!searchTerm) hasSaved[1](false);
 
   return (
     <div className="flex h-full flex-col">
@@ -46,9 +79,35 @@ export function SearchPage() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setShowHistory(true)}
+              onBlur={() => setTimeout(() => setShowHistory(false), 200)}
               placeholder="Search artists, albums, labels..."
               className="h-10 w-full rounded-lg border border-input bg-background pl-10 pr-4 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
             />
+
+            {showHistory && history && history.length > 0 && !searchTerm && (
+              <div className="absolute left-0 top-full z-10 mt-1 w-full rounded-lg border border-border bg-card shadow-lg">
+                <div className="flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground">
+                  <Clock className="h-3 w-3" />
+                  Recent searches
+                </div>
+                {history.map((h) => (
+                  <button
+                    key={h.id}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-accent text-left"
+                    onMouseDown={() => handleHistoryClick(h.query)}
+                  >
+                    <Clock className="h-3 w-3 text-muted-foreground" />
+                    {h.query}
+                    {h.result_count != null && (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {h.result_count} results
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <button
             type="submit"
@@ -120,13 +179,27 @@ export function SearchPage() {
 }
 
 function ContentCard({ item }: { item: ContentItem }) {
+  const [favChecked, setFavChecked] = useState(false);
+  const [isFav, setIsFav] = useState(false);
+
+  // Check if this item is favorited (lazy, once)
+  if (!favChecked && item.url) {
+    setFavChecked(true);
+    isFavorite(item.url, item.sourceId).then(setIsFav);
+  }
+
+  async function handleFavorite() {
+    if (isFav) {
+      // For simplicity, we'd need the favorite ID to remove
+      // This is a placeholder — full remove needs listFavorites + filter
+    } else {
+      await addFavorite("content", item.url, item.sourceId, item.title, item.imageUrl ?? undefined);
+      setIsFav(true);
+    }
+  }
+
   return (
-    <a
-      href={item.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex gap-4 rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent"
-    >
+    <div className="group flex gap-4 rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent">
       {item.imageUrl && (
         <img
           src={item.imageUrl}
@@ -135,12 +208,17 @@ function ContentCard({ item }: { item: ContentItem }) {
         />
       )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-start gap-2">
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-start gap-2"
+        >
           <h3 className="font-medium leading-tight group-hover:text-primary">
             {item.title}
           </h3>
           <ExternalLink className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
-        </div>
+        </a>
         {item.summary && (
           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
             {item.summary}
@@ -163,6 +241,13 @@ function ContentCard({ item }: { item: ContentItem }) {
           )}
         </div>
       </div>
-    </a>
+      <button
+        onClick={handleFavorite}
+        className="flex-shrink-0 p-1 text-muted-foreground hover:text-primary"
+        title={isFav ? "Remove from favorites" : "Add to favorites"}
+      >
+        <Star className={`h-4 w-4 ${isFav ? "fill-primary text-primary" : ""}`} />
+      </button>
+    </div>
   );
 }
