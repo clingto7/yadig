@@ -45,7 +45,7 @@ pub fn parse_bilibili_url(url: &str) -> Result<BiliUrl> {
         let bvid = url
             .split("bilibili.com/video/")
             .nth(1)
-            .map(|s| s.trim_end_matches('/').split('?').next().unwrap_or(""))
+            .map(|s| s.split('?').next().unwrap_or("").trim_end_matches('/'))
             .filter(|s| !s.is_empty())
             .ok_or_else(|| YadigError::NotFound("Invalid video URL: missing BV id".into()))?
             .to_string();
@@ -126,6 +126,20 @@ mod tests {
             BiliUrl::Collection {
                 mid: 37737161,
                 season_id: 1227671,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_video_url_with_query_params() {
+        // Real-world URL with extra query params from sharing
+        let url = "https://www.bilibili.com/video/BV1GJ411x7h7/?spm_id_from=333.337.search-card.all.click&vd_source=abc123";
+        let result = parse_bilibili_url(url).unwrap();
+        assert_eq!(
+            result,
+            BiliUrl::Video {
+                bvid: "BV1GJ411x7h7".to_string(),
+                page: None,
             }
         );
     }

@@ -204,6 +204,7 @@ function BiliLoginSection() {
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [qrKey, setQrKey] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>("");
+  const [qrImg, setQrImg] = useState<string | null>(null);
   const [showCookieInput, setShowCookieInput] = useState(false);
   const [sessdata, setSessdata] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -256,6 +257,15 @@ function BiliLoginSection() {
       setQrUrl(resp.url);
       setQrKey(resp.qrcodeKey);
       setQrStatus("Scan with Bilibili app");
+
+      // Generate QR code locally using qrcode library
+      const QRCode = (await import("qrcode"));
+      const dataUrl = await QRCode.toDataURL(resp.url, {
+        width: 200,
+        margin: 2,
+        color: { dark: "#000", light: "#fff" },
+      });
+      setQrImg(dataUrl);
     } catch (e) {
       setError(`Failed to start QR login: ${e}`);
     }
@@ -350,14 +360,20 @@ function BiliLoginSection() {
               </button>
             </div>
 
-            {qrUrl && (
+            {qrImg && (
               <div className="rounded-md border border-border bg-background p-4 text-center">
                 <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`}
+                  src={qrImg}
                   alt="Bilibili Login QR Code"
                   className="mx-auto h-48 w-48"
                 />
                 <p className="mt-2 text-sm text-muted-foreground">{qrStatus}</p>
+                <p className="mt-1 text-xs text-muted-foreground break-all">
+                  <a href={qrUrl!} target="_blank" rel="noopener noreferrer"
+                     className="hover:text-primary underline">
+                    Open link in browser
+                  </a> if QR code doesn't work
+                </p>
               </div>
             )}
 

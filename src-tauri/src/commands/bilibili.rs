@@ -73,6 +73,9 @@ pub async fn bili_qr_login_poll(
         .await
         .map_err(|e| YadigError::Network(format!("QR poll parse error: {}", e)))?;
 
+    // Debug: log the raw poll response
+    eprintln!("[bili_qr_login_poll] response: {}", data);
+
     // Inner code indicates QR status (86101=not scanned, 86090=scanned, 0=success, 86038=expired)
     let code = data["data"]["code"].as_i64().unwrap_or(-1) as i32;
     let message = data["data"]["message"]
