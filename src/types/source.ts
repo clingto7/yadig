@@ -16,7 +16,12 @@ export interface ContentItem {
   author?: string;
   publishedAt?: string;
   imageUrl?: string;
+  audioUrl?: string;
+  downloadUrl?: string;
+  duration?: number;
+  license?: string;
   extra?: Record<string, unknown>;
+  relevanceScore?: number;
 }
 
 export interface SearchPage {

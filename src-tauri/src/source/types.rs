@@ -54,8 +54,18 @@ pub struct ContentItem {
     pub author: Option<String>,
     pub published_at: Option<String>,
     pub image_url: Option<String>,
+    /// Direct audio stream URL (can be played in an audio element)
+    pub audio_url: Option<String>,
+    /// Direct download URL for the audio file
+    pub download_url: Option<String>,
+    /// Duration in seconds
+    pub duration: Option<u32>,
+    /// License information (e.g., CC URL)
+    pub license: Option<String>,
     /// Source-specific structured data (e.g., album rating, genre tags)
     pub extra: Option<serde_json::Value>,
+    /// Search relevance score (higher = more relevant, 0.0-1.0)
+    pub relevance_score: Option<f32>,
 }
 
 /// Pagination info for a search result
