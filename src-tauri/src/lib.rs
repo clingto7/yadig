@@ -5,6 +5,7 @@ mod error;
 mod http_client;
 mod source;
 
+use bili::auth::BiliAuth;
 use config::DiscogsKeys;
 use source::registry::SourceRegistry;
 use source::rss::pitchfork::PitchforkSource;
@@ -40,6 +41,7 @@ pub fn run() {
 
     let mut registry = SourceRegistry::new();
     let discogs_keys = DiscogsKeys::new();
+    let bili_auth = BiliAuth::new();
 
     // Register built-in sources
     registry.register(Box::new(PitchforkSource::new()));
@@ -60,6 +62,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(registry)
         .manage(discogs_keys)
+        .manage(bili_auth)
         .invoke_handler(tauri::generate_handler![
             commands::search::search_sources,
             commands::search::fetch_latest,
@@ -68,6 +71,11 @@ pub fn run() {
             commands::search::update_discogs_keys,
             commands::search::download_audio,
             commands::search::open_url,
+            commands::bilibili::bili_qr_login_start,
+            commands::bilibili::bili_qr_login_poll,
+            commands::bilibili::bili_cookie_login,
+            commands::bilibili::bili_logout,
+            commands::bilibili::bili_session_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");

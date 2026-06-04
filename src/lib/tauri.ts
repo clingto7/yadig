@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Source, ContentItem, SearchResult } from "@/types/source";
 
+export interface BiliSession {
+  sessdata: string;
+  biliJct: string;
+  dedeUserId: string;
+  vipStatus: number;
+}
+
 export const tauri = {
   searchSources: (params: {
     query: string;
@@ -27,4 +34,19 @@ export const tauri = {
 
   openUrl: (params: { url: string }): Promise<void> =>
     invoke("open_url", params),
+
+  // Bilibili auth
+  biliQrLoginStart: (): Promise<{ url: string; qrcodeKey: string }> =>
+    invoke("bili_qr_login_start"),
+
+  biliQrLoginPoll: (params: { qrcodeKey: string }): Promise<{ code: number; message: string; session: BiliSession | null }> =>
+    invoke("bili_qr_login_poll", params),
+
+  biliCookieLogin: (params: { sessdata: string }): Promise<void> =>
+    invoke("bili_cookie_login", params),
+
+  biliLogout: (): Promise<void> => invoke("bili_logout"),
+
+  biliSessionStatus: (): Promise<{ loggedIn: boolean; username: string | null; isPremium: boolean }> =>
+    invoke("bili_session_status"),
 };
