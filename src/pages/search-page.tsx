@@ -1,15 +1,18 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, X, ChevronDown } from "lucide-react";
+import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download } from "lucide-react";
 import { tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
+import { usePlayer } from "@/lib/player-context";
 import type { ContentItem, SearchResult } from "@/types/source";
+
+const SOURCE_TAB_ALL = "__all__";
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState(SOURCE_TAB_ALL);
   const savedSearch = useRef(false);
 
   const { data: sources } = useQuery({
@@ -24,10 +27,9 @@ export function SearchPage() {
     hasNextPage,
     fetchNextPage,
   } = useInfiniteQuery({
-    queryKey: ["search", searchTerm, Array.from(selectedSourceIds).sort().join(",")],
+    queryKey: ["search", searchTerm],
     queryFn: ({ pageParam }) => tauri.searchSources({
       query: searchTerm,
-      sourceIds: selectedSourceIds.size > 0 ? Array.from(selectedSourceIds) : undefined,
       page: pageParam,
     }),
     initialPageParam: 1,
@@ -68,17 +70,6 @@ export function SearchPage() {
     return Array.from(seen.values());
   }, [results, searchTerm]);
 
-  const currentPage = results?.pages?.[results.pages.length - 1]?.page?.page ?? 1;
-
-  function toggleSource(id: string) {
-    setSelectedSourceIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (query.trim()) {
@@ -111,6 +102,38 @@ export function SearchPage() {
   }, [results, searchTerm, sources]);
 
   const allItems = searchTerm ? deduplicatedItems : latest;
+
+  // Group items by source for tab display
+  const itemsBySource = useMemo(() => {
+    if (!deduplicatedItems) return new Map<string, ContentItem[]>();
+    const map = new Map<string, ContentItem[]>();
+    for (const item of deduplicatedItems) {
+      const list = map.get(item.sourceId) || [];
+      list.push(item);
+      map.set(item.sourceId, list);
+    }
+    return map;
+  }, [deduplicatedItems]);
+
+  // Active sources that have results
+  const activeSourceTabs = useMemo(() => {
+    const tabs: { id: string; name: string; count: number }[] = [];
+    for (const [sourceId, items] of itemsBySource) {
+      tabs.push({
+        id: sourceId,
+        name: sourceNameMap.get(sourceId) ?? sourceId,
+        count: items.length,
+      });
+    }
+    return tabs;
+  }, [itemsBySource, sourceNameMap]);
+
+  // Items for the currently active tab
+  const tabItems = useMemo(() => {
+    if (!searchTerm) return allItems;
+    if (activeTab === SOURCE_TAB_ALL) return deduplicatedItems;
+    return itemsBySource.get(activeTab) ?? [];
+  }, [searchTerm, activeTab, allItems, deduplicatedItems, itemsBySource]);
 
   return (
     <div className="flex h-full flex-col">
@@ -164,38 +187,38 @@ export function SearchPage() {
             Search
           </button>
         </form>
-
-        {sources && sources.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">Sources:</span>
-            {sources.map((s) => {
-              const selected = selectedSourceIds.size === 0 || selectedSourceIds.has(s.id);
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => toggleSource(s.id)}
-                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                    selected
-                      ? "bg-primary/15 text-primary ring-1 ring-primary/30"
-                      : "bg-secondary text-muted-foreground"
-                  }`}
-                >
-                  {s.name}
-                </button>
-              );
-            })}
-            {selectedSourceIds.size > 0 && (
-              <button
-                onClick={() => setSelectedSourceIds(new Set())}
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3 w-3" />
-                Clear
-              </button>
-            )}
-          </div>
-        )}
       </header>
+
+      {/* Source tabs — only shown when searching */}
+      {searchTerm && deduplicatedItems && deduplicatedItems.length > 0 && (
+        <div className="border-b border-border px-6 pt-2">
+          <div className="flex gap-1 overflow-x-auto">
+            <button
+              onClick={() => setActiveTab(SOURCE_TAB_ALL)}
+              className={`whitespace-nowrap rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeTab === SOURCE_TAB_ALL
+                  ? "bg-primary/15 text-primary border-b-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              }`}
+            >
+              All ({deduplicatedItems.length})
+            </button>
+            {activeSourceTabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`whitespace-nowrap rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === tab.id
+                    ? "bg-primary/15 text-primary border-b-2 border-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                }`}
+              >
+                {tab.name} ({tab.count})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-6">
         {isLoading && (
@@ -205,17 +228,11 @@ export function SearchPage() {
           </div>
         )}
 
-        {searchTerm && deduplicatedItems && deduplicatedItems.length > 0 && (
-          <p className="mb-4 text-sm text-muted-foreground">
-            {deduplicatedItems.length} unique results (page {currentPage})
-          </p>
-        )}
-
-        {allItems && allItems.length > 0 && (
+        {tabItems && tabItems.length > 0 && (
           <div className="grid gap-3">
-            {allItems.map((item, i) => (
+            {tabItems.map((item, i) => (
               <ContentCard
-                key={`${item.sourceId}-${i}`}
+                key={`${item.url}-${i}`}
                 item={item}
                 sourceName={sourceNameMap.get(item.sourceId) ?? item.sourceId}
               />
@@ -223,7 +240,7 @@ export function SearchPage() {
           </div>
         )}
 
-        {searchTerm && hasNextPage && (
+        {searchTerm && activeTab === SOURCE_TAB_ALL && hasNextPage && (
           <div className="mt-4 flex justify-center">
             <button
               onClick={() => fetchNextPage()}
@@ -238,10 +255,6 @@ export function SearchPage() {
               {isFetchingNextPage ? "Loading..." : "Load More"}
             </button>
           </div>
-        )}
-
-        {searchTerm && deduplicatedItems && deduplicatedItems.length > 0 && !hasNextPage && (
-          <p className="mt-4 text-center text-sm text-muted-foreground">All results loaded</p>
         )}
 
         {searchTerm && deduplicatedItems && deduplicatedItems.length === 0 && !isLoading && (
@@ -260,6 +273,9 @@ export function SearchPage() {
 
 function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: string }) {
   const [isFav, setIsFav] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const player = usePlayer();
 
   useEffect(() => {
     if (item.url) {
@@ -278,23 +294,95 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
     }
   }
 
+  async function handleDownload() {
+    if (!item.downloadUrl) return;
+    setDownloading(true);
+    try {
+      // Extract filename from title or URL
+      const ext = "mp3";
+      const safeName = item.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
+      const filename = `${safeName}.${ext}`;
+      const path = await tauri.downloadAudio({ url: item.downloadUrl, filename });
+      console.log("Downloaded to:", path);
+    } catch (err) {
+      console.error("Download failed:", err);
+      // Fallback: open in browser
+      await tauri.openUrl({ url: item.downloadUrl }).catch(() => {});
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function handleCopyLink() {
+    if (item.url) {
+      try {
+        await navigator.clipboard.writeText(item.url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error("Failed to copy:", err);
+      }
+    }
+  }
+
+  const isCurrentTrack = player.current?.audioUrl === item.audioUrl;
+  const isPlaying = isCurrentTrack && player.isPlaying;
+
+  function formatDuration(seconds?: number): string {
+    if (!seconds) return "";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
   const kindColor = item.sourceId === "discogs"
     ? "bg-destructive/15 text-destructive ring-1 ring-destructive/30"
+    : item.sourceId === "jamendo"
+    ? "bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30"
     : "bg-primary/15 text-primary ring-1 ring-primary/30";
 
   return (
     <div className="group flex gap-4 rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent">
       {item.imageUrl ? (
-        <a href={item.url} target="_blank" rel="noopener noreferrer">
+        <a href={item.url} target="_blank" rel="noopener noreferrer" className="relative flex-shrink-0">
           <img
             src={item.imageUrl}
             alt={item.title}
-            className="h-20 w-20 flex-shrink-0 rounded object-cover bg-secondary"
+            className="h-24 w-24 rounded object-cover bg-secondary"
+            loading="lazy"
           />
+          {item.audioUrl && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                player.play(item);
+              }}
+              className="absolute inset-0 flex items-center justify-center rounded bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
+            >
+              {isPlaying ? (
+                <Pause className="h-8 w-8 text-white" />
+              ) : (
+                <Play className="h-8 w-8 text-white ml-0.5" />
+              )}
+            </button>
+          )}
         </a>
       ) : (
-        <div className="flex h-20 w-20 flex-shrink-0 items-center justify-center rounded bg-secondary text-xs text-muted-foreground">
-          No image
+        <div className="flex h-24 w-24 flex-shrink-0 items-center justify-center rounded bg-secondary text-xs text-muted-foreground">
+          {item.audioUrl ? (
+            <button
+              onClick={() => player.play(item)}
+              className="flex h-full w-full items-center justify-center"
+            >
+              {isPlaying ? (
+                <Pause className="h-8 w-8 text-primary" />
+              ) : (
+                <Play className="h-8 w-8 text-primary ml-0.5" />
+              )}
+            </button>
+          ) : (
+            "No image"
+          )}
         </div>
       )}
       <div className="flex-1 min-w-0">
@@ -304,7 +392,7 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
           rel="noopener noreferrer"
           className="flex items-start gap-2 group/title"
         >
-          <h3 className="font-medium leading-tight group-hover:title:text-primary line-clamp-2">
+          <h3 className="font-medium leading-tight group-hover/title:text-primary line-clamp-2">
             {item.title}
           </h3>
           <ExternalLink className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-0 group-hover/title:opacity-100" />
@@ -318,16 +406,46 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${kindColor}`}>
             {sourceName}
           </span>
+          {item.duration && (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {formatDuration(item.duration)}
+            </span>
+          )}
           {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary hover:underline truncate max-w-[200px]"
+            <div className="inline-flex items-center gap-1">
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary hover:underline truncate max-w-[200px]"
+                title={item.url}
+              >
+                <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                {new URL(item.url).hostname}
+              </a>
+              <button
+                onClick={handleCopyLink}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                title="Copy link"
+              >
+                {copied ? (
+                  <Check className="h-3 w-3 text-primary" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </button>
+            </div>
+          )}
+          {item.downloadUrl && (
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors disabled:opacity-50"
+              title="Download"
             >
-              <ExternalLink className="h-3 w-3 flex-shrink-0" />
-              {new URL(item.url).hostname}
-            </a>
+              <Download className="h-3 w-3" />
+              {downloading ? "Downloading..." : "Download"}
+            </button>
           )}
           {item.author && (
             <span className="text-xs text-muted-foreground">{item.author}</span>
@@ -336,6 +454,17 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
             <span className="text-xs text-muted-foreground">
               {formatDate(item.publishedAt)}
             </span>
+          )}
+          {item.license && (
+            <a
+              href={item.license}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-muted-foreground hover:text-primary hover:underline"
+              title={item.license}
+            >
+              License
+            </a>
           )}
           {item.extra && "rating" in item.extra && (
             <span className="text-xs font-medium text-destructive">

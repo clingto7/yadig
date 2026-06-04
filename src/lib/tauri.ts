@@ -21,4 +21,10 @@ export const tauri = {
 
   setSourceEnabled: (params: { id: string; enabled: boolean }): Promise<void> =>
     invoke("set_source_enabled", params),
+
+  downloadAudio: (params: { url: string; filename: string }): Promise<string> =>
+    invoke("download_audio", params),
+
+  openUrl: (params: { url: string }): Promise<void> =>
+    invoke("open_url", params),
 };

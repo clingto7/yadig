@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Rss, Loader2, ExternalLink } from "lucide-react";
+import { Plus, Trash2, Rss, Loader2, ExternalLink, Copy, Check } from "lucide-react";
 import { listFeeds, addFeed, removeFeed, type RssFeed } from "@/lib/db";
 import { tauri } from "@/lib/tauri";
 import type { ContentItem } from "@/types/source";
@@ -156,6 +156,20 @@ export function FeedPage() {
 }
 
 function FeedCard({ item }: { item: ContentItem }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopyLink() {
+    if (item.url) {
+      try {
+        await navigator.clipboard.writeText(item.url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error("Failed to copy:", err);
+      }
+    }
+  }
+
   return (
     <div className="group flex gap-4 rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent">
       {item.imageUrl ? (
@@ -193,15 +207,29 @@ function FeedCard({ item }: { item: ContentItem }) {
             {item.sourceId}
           </span>
           {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary hover:underline truncate max-w-[200px]"
-            >
-              <ExternalLink className="h-3 w-3 flex-shrink-0" />
-              {new URL(item.url).hostname}
-            </a>
+            <div className="inline-flex items-center gap-1">
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary/70 hover:text-primary hover:underline truncate max-w-[200px]"
+                title={item.url}
+              >
+                <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                {new URL(item.url).hostname}
+              </a>
+              <button
+                onClick={handleCopyLink}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                title="Copy link"
+              >
+                {copied ? (
+                  <Check className="h-3 w-3 text-primary" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </button>
+            </div>
           )}
           {item.author && (
             <span className="text-xs text-muted-foreground">{item.author}</span>
