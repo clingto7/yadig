@@ -1,5 +1,8 @@
 use tauri::State;
 use crate::bili::auth::{BiliAuth, BiliSession, QrLoginInfo, QrLoginStatus};
+use crate::bili::client::BiliClient;
+use crate::bili::extractor::ExtractionResult;
+use crate::bili::types::DashAudio;
 use crate::error::{Result, YadigError};
 
 /// Response for QR login start
@@ -189,6 +192,49 @@ pub async fn bili_session_status(auth: State<'_, BiliAuth>) -> Result<SessionSta
             is_premium: false,
         })
     }
+}
+
+/// Response for playurl query
+#[derive(serde::Serialize)]
+pub struct PlayUrlInfo {
+    pub audio_url: String,
+    pub quality: i32,
+    pub bandwidth: i64,
+}
+
+/// Extract audio from a Bilibili video URL and save to Downloads.
+#[tauri::command]
+pub async fn bili_extract_audio(auth: State<'_, BiliAuth>, url: String) -> Result<ExtractionResult> {
+    let client = BiliClient::new((*auth).clone());
+    let downloads = dirs_next::download_dir()
+        .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
+    let download_dir = downloads.join("yadig");
+    client.extract_audio(&url, &download_dir).await
+}
+
+/// Get the best audio stream URL for a specific video (without downloading).
+#[tauri::command]
+pub async fn bili_get_playurl(
+    auth: State<'_, BiliAuth>,
+    bvid: String,
+    cid: i64,
+) -> Result<PlayUrlInfo> {
+    let client = BiliClient::new((*auth).clone());
+    let info = client.video_info(&bvid).await?;
+    let play_resp = client.playurl(info.aid, cid).await?;
+    let dash = play_resp.dash
+        .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
+
+    let has_session = auth.session().is_some();
+    let is_premium = auth.is_premium();
+    let best = crate::bili::extractor::select_best_audio(&dash.audio, has_session, is_premium)
+        .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
+
+    Ok(PlayUrlInfo {
+        audio_url: best.base_url.clone(),
+        quality: best.id,
+        bandwidth: best.bandwidth,
+    })
 }
 
 fn extract_cookie(cookies: &[String], name: &str) -> Option<String> {

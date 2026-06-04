@@ -8,6 +8,20 @@ export interface BiliSession {
   vipStatus: number;
 }
 
+export interface AudioSegment {
+  title: string;
+  filePath: string;
+  duration: number;
+  quality: number;
+  audioUrl: string;
+}
+
+export interface ExtractionResult {
+  videoTitle: string;
+  segments: AudioSegment[];
+  extractionType: "Single" | "MultiPart" | "Chapters" | "Collection";
+}
+
 export const tauri = {
   searchSources: (params: {
     query: string;
@@ -49,4 +63,10 @@ export const tauri = {
 
   biliSessionStatus: (): Promise<{ loggedIn: boolean; username: string | null; isPremium: boolean }> =>
     invoke("bili_session_status"),
+
+  biliExtractAudio: (params: { url: string }): Promise<ExtractionResult> =>
+    invoke("bili_extract_audio", params),
+
+  biliGetPlayurl: (params: { bvid: string; cid: number }): Promise<{ audioUrl: string; quality: number; bandwidth: number }> =>
+    invoke("bili_get_playurl", params),
 };

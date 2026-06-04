@@ -1,7 +1,26 @@
+use serde::{Deserialize, Serialize};
 use crate::bili::types::{DashAudio, Page, UgcSeason, Section, Episode, VideoInfo};
 
+/// A single extracted audio segment with its metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioSegment {
+    pub title: String,
+    pub file_path: String,
+    pub duration: u32,
+    pub quality: i32,
+    pub audio_url: String,
+}
+
+/// Result of an audio extraction operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionResult {
+    pub video_title: String,
+    pub segments: Vec<AudioSegment>,
+    pub extraction_type: ExtractionType,
+}
+
 /// Extraction type based on video structure
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExtractionType {
     /// Single video, single part
     Single,

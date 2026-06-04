@@ -76,6 +76,8 @@ pub fn run() {
             commands::bilibili::bili_cookie_login,
             commands::bilibili::bili_logout,
             commands::bilibili::bili_session_status,
+            commands::bilibili::bili_extract_audio,
+            commands::bilibili::bili_get_playurl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");
