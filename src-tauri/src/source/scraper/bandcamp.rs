@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use crate::error::{Result, YadigError};
+use crate::http_client;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
 
@@ -11,11 +12,9 @@ pub struct BandcampSource {
 
 impl BandcampSource {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .expect("Failed to build HTTP client");
-        Self { client }
+        Self {
+            client: http_client::build_client("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+        }
     }
 }
 
@@ -90,6 +89,11 @@ impl SourceProvider for BandcampSource {
                     author: None,
                     published_at: None,
                     image_url,
+                    audio_url: None,
+                    download_url: None,
+                    duration: None,
+                    license: None,
+                    relevance_score: None,
                     extra: if extra.is_empty() { None } else { Some(serde_json::Value::Object(extra)) },
                 })
             })
@@ -146,6 +150,11 @@ impl SourceProvider for BandcampSource {
                     author: artist,
                     published_at: None,
                     image_url,
+                    audio_url: None,
+                    download_url: None,
+                    duration: None,
+                    license: None,
+                    relevance_score: None,
                     extra: None,
                 })
             })
@@ -219,6 +228,11 @@ impl BandcampSource {
                     author: artist,
                     published_at: None,
                     image_url,
+                    audio_url: None,
+                    download_url: None,
+                    duration: None,
+                    license: None,
+                    relevance_score: None,
                     extra: None,
                 })
             })

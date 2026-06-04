@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use crate::config::DiscogsKeys;
 use crate::error::{Result, YadigError};
+use crate::http_client;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
 
@@ -13,10 +14,7 @@ pub struct DiscogsSource {
 
 impl DiscogsSource {
     pub fn new(keys: DiscogsKeys) -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("yadig/0.1.0 (music discovery)")
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = http_client::build_client("yadig/0.1.0 (music discovery)");
         Self { client, keys }
     }
 
@@ -46,6 +44,41 @@ impl SourceProvider for DiscogsSource {
     fn base_url(&self) -> &str { "https://www.discogs.com" }
 
     async fn search(&self, query: &str, limit: usize, page: usize) -> Result<Vec<ContentItem>> {
+        let mut all_items = Vec::new();
+
+        // 1. Search for artists first (highest relevance)
+        let artist_url = self.search_url(query, "artist", 3, 1);
+        if let Ok(resp) = self.client.get(&artist_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(data) = resp.json::<serde_json::Value>().await {
+                    let empty = vec![];
+                    let results = data["results"].as_array().unwrap_or(&empty);
+                    for (i, r) in results.iter().enumerate() {
+                        let title = r["title"].as_str().unwrap_or("").to_string();
+                        let id = r["id"].as_i64().unwrap_or(0);
+                        let url = format!("https://www.discogs.com/artist/{}", id);
+                        let image_url = r["cover_image"].as_str().map(String::from);
+                        all_items.push(ContentItem {
+                            source_id: "discogs".to_string(),
+                            title: format!("{} (Artist)", title),
+                            url,
+                            summary: Some("Artist".to_string()),
+                            author: None,
+                            published_at: None,
+                            image_url,
+                            audio_url: None,
+                            download_url: None,
+                            duration: None,
+                            license: None,
+                            relevance_score: Some(1.0 - (i as f32 * 0.05)),
+                            extra: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Search for releases
         let url = self.search_url(query, "release", limit, page);
         let response = self.client.get(&url).send().await?;
 
@@ -59,9 +92,10 @@ impl SourceProvider for DiscogsSource {
         let empty = vec![];
         let results = data["results"].as_array().unwrap_or(&empty);
 
-        let items: Vec<ContentItem> = results
+        let release_items: Vec<ContentItem> = results
             .iter()
-            .filter_map(|r| {
+            .enumerate()
+            .filter_map(|(i, r)| {
                 let title = r["title"].as_str()?.to_string();
                 let id = r["id"].as_i64()?;
                 let url = format!("https://www.discogs.com/release/{}", id);
@@ -92,13 +126,20 @@ impl SourceProvider for DiscogsSource {
                     author: None,
                     published_at: None,
                     image_url,
+                    audio_url: None,
+                    download_url: None,
+                    duration: None,
+                    license: None,
+                    relevance_score: Some(0.7 - (i as f32 * 0.02)),
                     extra: Some(serde_json::Value::Object(extra)),
                 })
             })
             .take(limit)
             .collect();
 
-        Ok(items)
+        all_items.extend(release_items);
+        all_items.truncate(limit + 3); // Allow a few extra for artist results
+        Ok(all_items)
     }
 
     async fn fetch_latest(&self, _limit: usize) -> Result<Vec<ContentItem>> {
