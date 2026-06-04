@@ -10,6 +10,7 @@ use config::DiscogsKeys;
 use source::registry::SourceRegistry;
 use source::rss::pitchfork::PitchforkSource;
 use source::rss::feeds::{StereogumSource, FaderSource};
+use source::api::bilibili::BiliSource;
 use source::api::discogs::DiscogsSource;
 use source::api::jamendo::JamendoSource;
 use source::scraper::bandcamp::BandcampSource;
@@ -51,6 +52,7 @@ pub fn run() {
     registry.register(Box::new(JamendoSource::new()));
     registry.register(Box::new(StereogumSource::new()));
     registry.register(Box::new(FaderSource::new()));
+    registry.register(Box::new(BiliSource::new(bili_auth.clone())));
 
     tauri::Builder::default()
         .plugin(
