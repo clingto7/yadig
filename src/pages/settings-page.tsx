@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Key, Eye, EyeOff } from "lucide-react";
+import { Key, Eye, EyeOff, LogIn, LogOut, QrCode, Cookie } from "lucide-react";
 import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
 
@@ -21,6 +21,7 @@ export function SettingsPage() {
 
       <div className="flex-1 overflow-y-auto p-6 space-y-8">
         <SourcesSection sources={sources} />
+        <BiliLoginSection />
         <ApiKeysSection />
         <AboutSection />
       </div>
@@ -192,6 +193,198 @@ function ApiKeysSection() {
             OpenAI / Anthropic / OpenRouter API keys for intelligent search and summarization.
           </p>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function BiliLoginSection() {
+  const [status, setStatus] = useState<{ loggedIn: boolean; username: string | null; isPremium: boolean } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [qrKey, setQrKey] = useState<string | null>(null);
+  const [qrStatus, setQrStatus] = useState<string>("");
+  const [showCookieInput, setShowCookieInput] = useState(false);
+  const [sessdata, setSessdata] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const s = await tauri.biliSessionStatus();
+      setStatus(s);
+    } catch {
+      setStatus({ loggedIn: false, username: null, isPremium: false });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { checkStatus(); }, [checkStatus]);
+
+  // Poll QR login status
+  useEffect(() => {
+    if (!qrKey) return;
+    const interval = setInterval(async () => {
+      try {
+        const resp = await tauri.biliQrLoginPoll({ qrcodeKey: qrKey });
+        if (resp.code === 0) {
+          setQrStatus("Login successful!");
+          setQrUrl(null);
+          setQrKey(null);
+          await checkStatus();
+          clearInterval(interval);
+        } else if (resp.code === 86090) {
+          setQrStatus("Scanned — confirm on your phone");
+        } else if (resp.code === 86038) {
+          setQrStatus("QR code expired — click to refresh");
+          clearInterval(interval);
+        } else {
+          setQrStatus("Waiting for scan...");
+        }
+      } catch (e) {
+        setQrStatus(`Error: ${e}`);
+        clearInterval(interval);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [qrKey, checkStatus]);
+
+  async function startQrLogin() {
+    setError(null);
+    try {
+      const resp = await tauri.biliQrLoginStart();
+      setQrUrl(resp.url);
+      setQrKey(resp.qrcodeKey);
+      setQrStatus("Scan with Bilibili app");
+    } catch (e) {
+      setError(`Failed to start QR login: ${e}`);
+    }
+  }
+
+  async function handleCookieLogin() {
+    setError(null);
+    try {
+      await tauri.biliCookieLogin({ sessdata: sessdata.trim() });
+      setSessdata("");
+      setShowCookieInput(false);
+      await checkStatus();
+    } catch (e) {
+      setError(`Cookie login failed: ${e}`);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await tauri.biliLogout();
+      await checkStatus();
+    } catch (e) {
+      setError(`Logout failed: ${e}`);
+    }
+  }
+
+  if (loading) {
+    return (
+      <section>
+        <h3 className="text-lg font-semibold">Bilibili</h3>
+        <p className="mt-1 text-sm text-muted-foreground">Loading...</p>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h3 className="text-lg font-semibold">Bilibili</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Login to access higher quality audio streams (192K+ requires login).
+      </p>
+
+      <div className="mt-4 rounded-lg border border-border bg-card p-4">
+        {status?.loggedIn ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <LogIn className="h-4 w-4 text-primary" />
+                <span className="font-medium">{status.username ?? "Logged in"}</span>
+                {status.isPremium && (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                    Premium
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={handleLogout}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-secondary"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Logout
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {status.isPremium
+                ? "Max quality: Hi-Res / Dolby Atmos"
+                : "Max quality: 192K. Upgrade to Premium for Hi-Res."}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <LogIn className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground">Not logged in</span>
+              <span className="text-xs text-muted-foreground">(max 64K audio)</span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={startQrLogin}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                <QrCode className="h-3.5 w-3.5" />
+                Login with QR Code
+              </button>
+              <button
+                onClick={() => setShowCookieInput(!showCookieInput)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-secondary"
+              >
+                <Cookie className="h-3.5 w-3.5" />
+                Cookie Login
+              </button>
+            </div>
+
+            {qrUrl && (
+              <div className="rounded-md border border-border bg-background p-4 text-center">
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`}
+                  alt="Bilibili Login QR Code"
+                  className="mx-auto h-48 w-48"
+                />
+                <p className="mt-2 text-sm text-muted-foreground">{qrStatus}</p>
+              </div>
+            )}
+
+            {showCookieInput && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={sessdata}
+                  onChange={(e) => setSessdata(e.target.value)}
+                  placeholder="Paste SESSDATA cookie value"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  onClick={handleCookieLogin}
+                  disabled={!sessdata.trim()}
+                  className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Login
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <p className="mt-2 text-sm text-destructive">{error}</p>
+        )}
       </div>
     </section>
   );
