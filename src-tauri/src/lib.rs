@@ -78,6 +78,7 @@ pub fn run() {
             commands::bilibili::bili_session_status,
             commands::bilibili::bili_extract_audio,
             commands::bilibili::bili_extract_segment,
+            commands::bilibili::bili_extract_collection,
             commands::bilibili::bili_check_ffmpeg,
             commands::bilibili::bili_get_playurl,
         ])

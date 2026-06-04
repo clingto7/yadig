@@ -121,9 +121,9 @@ impl BiliClient {
                 let resolved_url = resp.url().to_string();
                 Box::pin(self.extract_audio(&resolved_url, download_dir)).await
             }
-            _ => Err(YadigError::NotFound(
-                "URL is not a single video. Use bili_extract_collection for collections.".into()
-            )),
+            crate::bili::url::BiliUrl::Collection { mid, season_id } => {
+                self.extract_collection(mid, season_id, download_dir).await
+            }
         }
     }
 
@@ -238,6 +238,56 @@ impl BiliClient {
             duration: page_info.duration,
             quality: best.id,
             audio_url: best.base_url.clone(),
+        })
+    }
+
+    /// Fetch all videos in a collection (合集).
+    pub async fn season_archives(&self, mid: i64, season_id: i64) -> Result<SeasonArchives> {
+        let url = format!(
+            "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid={}&season_id={}&page_num=1&page_size=100",
+            mid, season_id
+        );
+        let resp = self.request(&url).send().await
+            .map_err(|e| YadigError::Network(format!("season_archives request failed: {}", e)))?;
+
+        let body: BiliResponse<SeasonArchives> = resp.json().await
+            .map_err(|e| YadigError::Network(format!("season_archives parse error: {}", e)))?;
+
+        if body.code != 0 {
+            return Err(YadigError::Network(format!(
+                "season_archives API error ({}): {}", body.code, body.message
+            )));
+        }
+
+        body.data.ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))
+    }
+
+    /// Extract audio from a collection (合集) — enumerates all videos and downloads each.
+    pub async fn extract_collection(&self, mid: i64, season_id: i64, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+        let season = self.season_archives(mid, season_id).await?;
+        let safe_title = sanitize_filename(&season.meta.name);
+        let collection_dir = download_dir.join(&safe_title);
+
+        let mut segments = Vec::new();
+        for archive in &season.archives {
+            // Fetch video info to get the first page's cid
+            let info = self.video_info(&archive.bvid).await?;
+            let page_info = info.pages.first()
+                .ok_or_else(|| YadigError::NotFound(format!("No pages in {}", archive.bvid)))?;
+
+            match self.download_page_audio(&info, page_info, &collection_dir).await {
+                Ok(seg) => segments.push(seg),
+                Err(e) => {
+                    // Log error but continue with other videos
+                    eprintln!("Failed to extract {}: {}", archive.bvid, e);
+                }
+            }
+        }
+
+        Ok(ExtractionResult {
+            video_title: season.meta.name,
+            segments,
+            extraction_type: ExtractionType::Collection,
         })
     }
 

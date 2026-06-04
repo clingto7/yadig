@@ -81,6 +81,30 @@ pub struct BiliResponse<T> {
     pub message: String,
 }
 
+/// Collection (合集) archives list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeasonArchives {
+    pub aids: Vec<i64>,
+    pub archives: Vec<SeasonArchive>,
+    pub meta: SeasonMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeasonArchive {
+    pub aid: i64,
+    pub bvid: String,
+    pub title: String,
+    pub duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeasonMeta {
+    pub name: String,
+    pub mid: i64,
+    pub season_id: i64,
+    pub total: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

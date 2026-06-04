@@ -227,6 +227,20 @@ pub async fn bili_extract_segment(
     client.extract_segment(&bvid, cid, &title, &download_dir).await
 }
 
+/// Extract audio from a collection (合集) by mid and season_id.
+#[tauri::command]
+pub async fn bili_extract_collection(
+    auth: State<'_, BiliAuth>,
+    mid: i64,
+    season_id: i64,
+) -> Result<ExtractionResult> {
+    let client = BiliClient::new((*auth).clone());
+    let downloads = dirs_next::download_dir()
+        .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
+    let download_dir = downloads.join("yadig");
+    client.extract_collection(mid, season_id, &download_dir).await
+}
+
 /// Check if FFmpeg is available for chapter splitting.
 #[tauri::command]
 pub async fn bili_check_ffmpeg() -> Result<bool> {
