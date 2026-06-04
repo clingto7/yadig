@@ -70,6 +70,8 @@ export const tauri = {
   biliExtractSegment: (params: { bvid: string; cid: number; title: string }): Promise<ExtractionResult> =>
     invoke("bili_extract_segment", params),
 
+  biliCheckFfmpeg: (): Promise<boolean> => invoke("bili_check_ffmpeg"),
+
   biliGetPlayurl: (params: { bvid: string; cid: number }): Promise<{ audioUrl: string; quality: number; bandwidth: number }> =>
     invoke("bili_get_playurl", params),
 };

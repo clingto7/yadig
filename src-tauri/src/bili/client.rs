@@ -1,4 +1,5 @@
 use crate::bili::auth::BiliAuth;
+use crate::bili::ffmpeg;
 use crate::bili::types::*;
 use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
 use crate::bili::url::parse_bilibili_url;
@@ -71,6 +72,27 @@ impl BiliClient {
         body.data.ok_or_else(|| YadigError::NotFound("playurl returned no data".into()))
     }
 
+    /// Fetch player info including view_points (chapters) for a video part.
+    pub async fn player_info(&self, aid: i64, cid: i64) -> Result<PlayerInfo> {
+        let url = format!(
+            "https://api.bilibili.com/x/player/v2?avid={}&cid={}",
+            aid, cid
+        );
+        let resp = self.request(&url).send().await
+            .map_err(|e| YadigError::Network(format!("player_info request failed: {}", e)))?;
+
+        let body: BiliResponse<PlayerInfo> = resp.json().await
+            .map_err(|e| YadigError::Network(format!("player_info parse error: {}", e)))?;
+
+        if body.code != 0 {
+            return Err(YadigError::Network(format!(
+                "player_info API error ({}): {}", body.code, body.message
+            )));
+        }
+
+        body.data.ok_or_else(|| YadigError::NotFound("player_info returned no data".into()))
+    }
+
     /// Download audio from a Bilibili URL and save to local file.
     /// For multi-part videos (分P), extracts all parts unless a specific ?p=N is given.
     pub async fn extract_audio(&self, url: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
@@ -106,18 +128,71 @@ impl BiliClient {
     }
 
     /// Extract audio for a single page (分P) by its page number.
+    /// If the page has chapter markers (view_points) and FFmpeg is available,
+    /// splits the audio into individual chapter files.
     async fn extract_page(&self, info: &VideoInfo, page_num: u32, download_dir: &std::path::Path) -> Result<ExtractionResult> {
         let page_idx = page_num.saturating_sub(1) as usize;
         let page_info = info.pages.get(page_idx)
             .ok_or_else(|| YadigError::NotFound(format!("Page {} not found", page_num)))?;
 
-        let segment = self.download_page_audio(info, page_info, download_dir).await?;
+        // Check for chapter markers
+        let player = self.player_info(info.aid, page_info.cid).await?;
 
-        Ok(ExtractionResult {
-            video_title: info.title.clone(),
-            segments: vec![segment],
-            extraction_type: if info.pages.len() > 1 { ExtractionType::MultiPart } else { ExtractionType::Single },
-        })
+        if !player.view_points.is_empty() && ffmpeg::is_available() {
+            // Download full audio to temp, then split by chapters
+            let temp = ffmpeg::temp_path(download_dir, &info.title);
+            let play_resp = self.playurl(info.aid, page_info.cid).await?;
+            let dash = play_resp.dash
+                .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
+
+            let has_session = self.auth.session().is_some();
+            let is_premium = self.auth.is_premium();
+            let best = select_best_audio(&dash.audio, has_session, is_premium)
+                .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
+
+            self.download_stream(&best.base_url, &temp).await?;
+
+            // Build split segments
+            let safe_title = crate::bili::client::sanitize_filename(&info.title);
+            let segments: Vec<ffmpeg::SplitSegment> = player.view_points.iter().map(|vp| {
+                let safe_chapter = crate::bili::client::sanitize_filename(&vp.content);
+                ffmpeg::SplitSegment {
+                    start: vp.from,
+                    end: vp.to,
+                    output_path: download_dir.join(format!("{} - {}.m4a", safe_title, safe_chapter))
+                        .to_string_lossy().to_string(),
+                }
+            }).collect();
+
+            let output_paths = ffmpeg::split_audio(&temp, &segments)?;
+
+            // Clean up temp file
+            let _ = std::fs::remove_file(&temp);
+
+            let audio_segments: Vec<AudioSegment> = player.view_points.iter().zip(output_paths.iter()).map(|(vp, path)| {
+                AudioSegment {
+                    title: vp.content.clone(),
+                    file_path: path.clone(),
+                    duration: (vp.to - vp.from) as u32,
+                    quality: best.id,
+                    audio_url: best.base_url.clone(),
+                }
+            }).collect();
+
+            Ok(ExtractionResult {
+                video_title: info.title.clone(),
+                segments: audio_segments,
+                extraction_type: ExtractionType::Chapters,
+            })
+        } else {
+            // No chapters or FFmpeg not available — extract as single
+            let segment = self.download_page_audio(info, page_info, download_dir).await?;
+            Ok(ExtractionResult {
+                video_title: info.title.clone(),
+                segments: vec![segment],
+                extraction_type: if info.pages.len() > 1 { ExtractionType::MultiPart } else { ExtractionType::Single },
+            })
+        }
     }
 
     /// Extract audio for all pages in a multi-part video.

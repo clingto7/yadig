@@ -227,6 +227,12 @@ pub async fn bili_extract_segment(
     client.extract_segment(&bvid, cid, &title, &download_dir).await
 }
 
+/// Check if FFmpeg is available for chapter splitting.
+#[tauri::command]
+pub async fn bili_check_ffmpeg() -> Result<bool> {
+    Ok(crate::bili::ffmpeg::is_available())
+}
+
 /// Get the best audio stream URL for a specific video (without downloading).
 #[tauri::command]
 pub async fn bili_get_playurl(
