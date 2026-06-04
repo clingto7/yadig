@@ -54,7 +54,7 @@ impl BiliClient {
     /// Returns the full PlayUrlResponse containing audio streams.
     pub async fn playurl(&self, aid: i64, cid: i64) -> Result<PlayUrlResponse> {
         let url = format!(
-            "https://api.bilibili.com/x/player/wbi/playurl?avid={}&cid={}&fnval=16&fnver=0&fourk=1",
+            "https://api.bilibili.com/x/player/playurl?avid={}&cid={}&fnval=16&fnver=0&fourk=1",
             aid, cid
         );
         let resp = self.request(&url).send().await
@@ -292,7 +292,7 @@ impl BiliClient {
     }
 
     /// Extract audio for a specific segment by cid (for selective extraction).
-    pub async fn extract_segment(&self, bvid: &str, cid: i64, title: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    pub async fn extract_segment(&self, bvid: &str, cid: i64, _title: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
         let info = self.video_info(bvid).await?;
         let page_info = info.pages.iter().find(|p| p.cid == cid)
             .ok_or_else(|| YadigError::NotFound(format!("Page with cid {} not found", cid)))?;

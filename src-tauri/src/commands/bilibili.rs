@@ -1,8 +1,7 @@
 use tauri::State;
-use crate::bili::auth::{BiliAuth, BiliSession, QrLoginInfo, QrLoginStatus};
+use crate::bili::auth::{BiliAuth, BiliSession};
 use crate::bili::client::BiliClient;
 use crate::bili::extractor::ExtractionResult;
-use crate::bili::types::DashAudio;
 use crate::error::{Result, YadigError};
 
 /// Response for QR login start
@@ -69,30 +68,24 @@ pub async fn bili_qr_login_poll(
         .await
         .map_err(|e| YadigError::Network(format!("QR poll failed: {}", e)))?;
 
-    // Extract cookies from response headers before parsing JSON
-    let cookies: Vec<String> = resp
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
-        .collect();
-
     let data: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| YadigError::Network(format!("QR poll parse error: {}", e)))?;
 
+    // Inner code indicates QR status (86101=not scanned, 86090=scanned, 0=success, 86038=expired)
     let code = data["data"]["code"].as_i64().unwrap_or(-1) as i32;
     let message = data["data"]["message"]
         .as_str()
         .unwrap_or("")
         .to_string();
 
-    // On success (code 0), extract session from cookies
+    // On success (code 0), extract session from data.url query parameters
     let session = if code == 0 {
-        let sessdata = extract_cookie(&cookies, "SESSDATA");
-        let bili_jct = extract_cookie(&cookies, "bili_jct");
-        let dede_user_id = extract_cookie(&cookies, "DedeUserID");
+        let callback_url = data["data"]["url"].as_str().unwrap_or("");
+        let sessdata = extract_url_param(callback_url, "SESSDATA");
+        let bili_jct = extract_url_param(callback_url, "bili_jct");
+        let dede_user_id = extract_url_param(callback_url, "DedeUserID");
 
         if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) = (sessdata, bili_jct, dede_user_id) {
             let s = BiliSession {
@@ -272,15 +265,16 @@ pub async fn bili_get_playurl(
     })
 }
 
-fn extract_cookie(cookies: &[String], name: &str) -> Option<String> {
-    for cookie in cookies {
-        for part in cookie.split(';') {
-            let part = part.trim();
-            if let Some(value) = part.strip_prefix(&format!("{}=", name)) {
-                // URL-decode the value, strip any attributes after semicolon
-                let value = value.split(';').next().unwrap_or(value).trim();
-                return Some(value.to_string());
-            }
+/// Extract a query parameter from a URL string.
+fn extract_url_param(url: &str, key: &str) -> Option<String> {
+    let query_start = url.find('?')?;
+    let query = &url[query_start + 1..];
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next()? == key {
+            let val = parts.next().unwrap_or("");
+            // URL-decode: Bilibili uses %2C for comma, etc.
+            return Some(val.replace("%2C", ",").replace("%2F", "/").replace("%2B", "+"));
         }
     }
     None
@@ -288,18 +282,14 @@ fn extract_cookie(cookies: &[String], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_cookie;
+    use super::extract_url_param;
 
     #[test]
-    fn extract_cookie_from_set_cookie_header() {
-        let cookies = vec![
-            "SESSDATA=abc123; Domain=.bilibili.com; Path=/".to_string(),
-            "bili_jct=def456; Domain=.bilibili.com".to_string(),
-            "DedeUserID=42; Path=/".to_string(),
-        ];
-        assert_eq!(extract_cookie(&cookies, "SESSDATA"), Some("abc123".to_string()));
-        assert_eq!(extract_cookie(&cookies, "bili_jct"), Some("def456".to_string()));
-        assert_eq!(extract_cookie(&cookies, "DedeUserID"), Some("42".to_string()));
-        assert_eq!(extract_cookie(&cookies, "missing"), None);
+    fn extract_params_from_callback_url() {
+        let url = "https://passport.bilibili.com/crossDomain?DedeUserID=12345&DedeUserID__ckMd5=abc&SESSDATA=test%2Cdata&bili_jct=ctoken&gourl=https%3A%2F%2Fwww.bilibili.com";
+        assert_eq!(extract_url_param(url, "SESSDATA"), Some("test,data".to_string()));
+        assert_eq!(extract_url_param(url, "bili_jct"), Some("ctoken".to_string()));
+        assert_eq!(extract_url_param(url, "DedeUserID"), Some("12345".to_string()));
+        assert_eq!(extract_url_param(url, "missing"), None);
     }
 }
