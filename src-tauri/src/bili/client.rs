@@ -131,16 +131,20 @@ impl BiliClient {
 
     /// Extract audio for a single page (分P) by its page number.
     /// If the page has chapter markers (view_points) and FFmpeg is available,
-    /// splits the audio into individual chapter files.
+    /// splits the audio into individual chapter files. Falls back gracefully.
     async fn extract_page(&self, info: &VideoInfo, page_num: u32, download_dir: &std::path::Path) -> Result<ExtractionResult> {
         let page_idx = page_num.saturating_sub(1) as usize;
         let page_info = info.pages.get(page_idx)
             .ok_or_else(|| YadigError::NotFound(format!("Page {} not found", page_num)))?;
 
-        // Check for chapter markers
-        let player = self.player_info(info.aid, page_info.cid).await?;
+        // Try to detect chapters, but fall back gracefully if unavailable
+        let player = self.player_info(info.aid, page_info.cid).await.ok();
+        let has_chapters = player.as_ref()
+            .map(|p| !p.view_points.is_empty())
+            .unwrap_or(false);
 
-        if !player.view_points.is_empty() && ffmpeg::is_available() {
+        if has_chapters && ffmpeg::is_available() {
+            let player = player.unwrap(); // safe: has_chapters ensures Some
             // Download full audio to temp, then split by chapters
             let temp = ffmpeg::temp_path(download_dir, &info.title);
             let play_resp = self.playurl(info.aid, page_info.cid).await?;
