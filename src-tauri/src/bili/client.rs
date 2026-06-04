@@ -1,14 +1,17 @@
 use crate::bili::auth::BiliAuth;
 use crate::bili::ffmpeg;
 use crate::bili::types::*;
+use crate::bili::wbi::{self, WbiKeys};
 use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
 use crate::bili::url::parse_bilibili_url;
 use crate::error::{Result, YadigError};
+use tokio::sync::Mutex;
 
 /// Bilibili API client. Handles HTTP requests, auth cookies, and response parsing.
 pub struct BiliClient {
     http: reqwest::Client,
     auth: BiliAuth,
+    wbi_keys: Mutex<Option<WbiKeys>>,
 }
 
 impl BiliClient {
@@ -16,6 +19,7 @@ impl BiliClient {
         Self {
             http: crate::http_client::build_client("yadig/0.1.0"),
             auth,
+            wbi_keys: Mutex::new(None),
         }
     }
 
@@ -27,6 +31,43 @@ impl BiliClient {
             req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
         }
         req
+    }
+
+    /// Ensure WBI keys are available, fetching if needed.
+    async fn ensure_wbi_keys(&self) -> Result<WbiKeys> {
+        // Check cache (drop lock before await)
+        {
+            let guard = self.wbi_keys.lock().await;
+            if let Some(ref keys) = *guard {
+                return Ok(keys.clone());
+            }
+        }
+        // Fetch new keys
+        let keys = wbi::fetch_wbi_keys(&self.http)
+            .await
+            .map_err(|e| YadigError::Network(e))?;
+        // Cache them
+        *self.wbi_keys.lock().await = Some(keys.clone());
+        Ok(keys)
+    }
+
+    /// Make a WBI-signed GET request to the given endpoint.
+    async fn signed_get(&self, base_url: &str, params: &[(&str, &str)]) -> Result<reqwest::Response> {
+        let keys = self.ensure_wbi_keys().await?;
+        let (w_rid, wts) = wbi::sign_params(params, &keys);
+
+        let query: String = params.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+        let url = format!("{}?{}&w_rid={}&wts={}", base_url, query, w_rid, wts);
+
+        let mut req = self.http.get(&url)
+            .header("Referer", "https://www.bilibili.com");
+        if let Some(session) = self.auth.session() {
+            req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
+        }
+        req.send().await.map_err(|e| YadigError::Network(format!("HTTP request failed: {}", e)))
     }
 
     /// Fetch video info by BV号.
@@ -74,14 +115,15 @@ impl BiliClient {
         body.data.ok_or_else(|| YadigError::NotFound("playurl returned no data".into()))
     }
 
-    /// Fetch player info including view_points (chapters) for a video part.
+    /// Fetch player info including view_points (chapters) using WBI signing.
     pub async fn player_info(&self, aid: i64, cid: i64) -> Result<PlayerInfo> {
-        let url = format!(
-            "https://api.bilibili.com/x/player/v2?avid={}&cid={}",
-            aid, cid
-        );
-        let resp = self.request(&url).send().await
-            .map_err(|e| YadigError::Network(format!("player_info request failed: {}", e)))?;
+        let aid_str = aid.to_string();
+        let cid_str = cid.to_string();
+        let params: &[(&str, &str)] = &[("avid", &aid_str), ("cid", &cid_str)];
+        let resp = self.signed_get(
+            "https://api.bilibili.com/x/player/wbi/v2",
+            params,
+        ).await?;
 
         let body: BiliResponse<PlayerInfo> = resp.json().await
             .map_err(|e| YadigError::Network(format!("player_info parse error: {}", e)))?;

@@ -4,3 +4,4 @@ pub mod ffmpeg;
 pub mod types;
 pub mod url;
 pub mod extractor;
+pub mod wbi;
