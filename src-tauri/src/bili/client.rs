@@ -72,47 +72,26 @@ impl BiliClient {
     }
 
     /// Download audio from a Bilibili URL and save to local file.
-    /// Returns the extraction result with file paths.
+    /// For multi-part videos (分P), extracts all parts unless a specific ?p=N is given.
     pub async fn extract_audio(&self, url: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
         let bili_url = parse_bilibili_url(url)?;
 
         match bili_url {
             crate::bili::url::BiliUrl::Video { bvid, page } => {
                 let info = self.video_info(&bvid).await?;
-                let page_idx = page.unwrap_or(1).saturating_sub(1) as usize;
-                let page_info = info.pages.get(page_idx)
-                    .ok_or_else(|| YadigError::NotFound(format!("Page {} not found", page_idx + 1)))?;
 
-                let play_resp = self.playurl(info.aid, page_info.cid).await?;
-                let dash = play_resp.dash
-                    .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
-
-                let has_session = self.auth.session().is_some();
-                let is_premium = self.auth.is_premium();
-                let best = select_best_audio(&dash.audio, has_session, is_premium)
-                    .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
-
-                // Download audio
-                let safe_title = sanitize_filename(&info.title);
-                let filename = format!("{}.m4a", safe_title);
-                let filepath = download_dir.join(&filename);
-
-                self.download_stream(&best.base_url, &filepath).await?;
-
-                Ok(ExtractionResult {
-                    video_title: info.title,
-                    segments: vec![AudioSegment {
-                        title: page_info.part.clone(),
-                        file_path: filepath.to_string_lossy().to_string(),
-                        duration: page_info.duration,
-                        quality: best.id,
-                        audio_url: best.base_url.clone(),
-                    }],
-                    extraction_type: ExtractionType::Single,
-                })
+                if let Some(p) = page {
+                    // Specific page requested — extract single part
+                    self.extract_page(&info, p, download_dir).await
+                } else if info.pages.len() > 1 {
+                    // Multi-part video — extract all pages
+                    self.extract_all_pages(&info, download_dir).await
+                } else {
+                    // Single page video
+                    self.extract_page(&info, 1, download_dir).await
+                }
             }
             crate::bili::url::BiliUrl::ShortLink { url } => {
-                // Resolve short link by following redirect
                 let resp = self.http.get(&url)
                     .header("Referer", "https://www.bilibili.com")
                     .send().await
@@ -124,6 +103,82 @@ impl BiliClient {
                 "URL is not a single video. Use bili_extract_collection for collections.".into()
             )),
         }
+    }
+
+    /// Extract audio for a single page (分P) by its page number.
+    async fn extract_page(&self, info: &VideoInfo, page_num: u32, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+        let page_idx = page_num.saturating_sub(1) as usize;
+        let page_info = info.pages.get(page_idx)
+            .ok_or_else(|| YadigError::NotFound(format!("Page {} not found", page_num)))?;
+
+        let segment = self.download_page_audio(info, page_info, download_dir).await?;
+
+        Ok(ExtractionResult {
+            video_title: info.title.clone(),
+            segments: vec![segment],
+            extraction_type: if info.pages.len() > 1 { ExtractionType::MultiPart } else { ExtractionType::Single },
+        })
+    }
+
+    /// Extract audio for all pages in a multi-part video.
+    async fn extract_all_pages(&self, info: &VideoInfo, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+        let mut segments = Vec::new();
+        for page_info in &info.pages {
+            let segment = self.download_page_audio(info, page_info, download_dir).await?;
+            segments.push(segment);
+        }
+
+        Ok(ExtractionResult {
+            video_title: info.title.clone(),
+            segments,
+            extraction_type: ExtractionType::MultiPart,
+        })
+    }
+
+    /// Download audio for a single page and return the segment metadata.
+    async fn download_page_audio(&self, info: &VideoInfo, page_info: &Page, download_dir: &std::path::Path) -> Result<AudioSegment> {
+        let play_resp = self.playurl(info.aid, page_info.cid).await?;
+        let dash = play_resp.dash
+            .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
+
+        let has_session = self.auth.session().is_some();
+        let is_premium = self.auth.is_premium();
+        let best = select_best_audio(&dash.audio, has_session, is_premium)
+            .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
+
+        let safe_title = sanitize_filename(&info.title);
+        let safe_part = sanitize_filename(&page_info.part);
+        let filename = if info.pages.len() > 1 {
+            format!("{} - {}.m4a", safe_title, safe_part)
+        } else {
+            format!("{}.m4a", safe_title)
+        };
+        let filepath = download_dir.join(&filename);
+
+        self.download_stream(&best.base_url, &filepath).await?;
+
+        Ok(AudioSegment {
+            title: page_info.part.clone(),
+            file_path: filepath.to_string_lossy().to_string(),
+            duration: page_info.duration,
+            quality: best.id,
+            audio_url: best.base_url.clone(),
+        })
+    }
+
+    /// Extract audio for a specific segment by cid (for selective extraction).
+    pub async fn extract_segment(&self, bvid: &str, cid: i64, title: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+        let info = self.video_info(bvid).await?;
+        let page_info = info.pages.iter().find(|p| p.cid == cid)
+            .ok_or_else(|| YadigError::NotFound(format!("Page with cid {} not found", cid)))?;
+
+        let segment = self.download_page_audio(&info, page_info, download_dir).await?;
+
+        Ok(ExtractionResult {
+            video_title: info.title.clone(),
+            segments: vec![segment],
+            extraction_type: ExtractionType::MultiPart,
+        })
     }
 
     /// Download a stream URL to a local file.
@@ -180,5 +235,30 @@ mod tests {
     fn sanitize_filename_preserves_unicode() {
         assert_eq!(sanitize_filename("测试歌曲"), "测试歌曲");
         assert_eq!(sanitize_filename("Bilibilié"), "Bilibilié");
+    }
+
+    #[test]
+    fn multipart_filename_format() {
+        // Multi-part: "{title} - {part}.m4a"
+        let title = sanitize_filename("My Album");
+        let part = sanitize_filename("Track 1");
+        let filename = format!("{} - {}.m4a", title, part);
+        assert_eq!(filename, "My Album - Track 1.m4a");
+    }
+
+    #[test]
+    fn single_filename_format() {
+        // Single: "{title}.m4a"
+        let title = sanitize_filename("My Song");
+        let filename = format!("{}.m4a", title);
+        assert_eq!(filename, "My Song.m4a");
+    }
+
+    #[test]
+    fn multipart_filename_sanitizes_both_parts() {
+        let title = sanitize_filename("Album: Vol. 1");
+        let part = sanitize_filename("Track 1/2");
+        let filename = format!("{} - {}.m4a", title, part);
+        assert_eq!(filename, "Album_ Vol. 1 - Track 1_2.m4a");
     }
 }

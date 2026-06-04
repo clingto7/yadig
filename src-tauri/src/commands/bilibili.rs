@@ -212,6 +212,21 @@ pub async fn bili_extract_audio(auth: State<'_, BiliAuth>, url: String) -> Resul
     client.extract_audio(&url, &download_dir).await
 }
 
+/// Extract audio for a specific 分P by cid.
+#[tauri::command]
+pub async fn bili_extract_segment(
+    auth: State<'_, BiliAuth>,
+    bvid: String,
+    cid: i64,
+    title: String,
+) -> Result<ExtractionResult> {
+    let client = BiliClient::new((*auth).clone());
+    let downloads = dirs_next::download_dir()
+        .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
+    let download_dir = downloads.join("yadig");
+    client.extract_segment(&bvid, cid, &title, &download_dir).await
+}
+
 /// Get the best audio stream URL for a specific video (without downloading).
 #[tauri::command]
 pub async fn bili_get_playurl(
