@@ -1,0 +1,40 @@
+# Issue 6: Collection (合集) batch extraction
+
+## What to build
+
+Handle Bilibili collection URLs (合集/ugc_season). When the user pastes a collection URL or a video that belongs to a collection, enumerate all videos in the collection and allow batch audio extraction.
+
+1. **Collection URL parsing** — Extend `parse_bilibili_url` to handle:
+   - `https://space.bilibili.com/{mid}/channel/collectiondetail?sid={season_id}` → `BiliUrl::Collection { mid, season_id }`
+   - Video URLs that have `ugc_season` in their info → prompt user to extract full collection
+
+2. **Collection enumeration** — Use `/x/polymer/web-space/seasons_archives_list` API to paginate through all videos in a collection. Returns list of `(aid, bvid, title, duration)` for each video.
+
+3. **Batch extraction** — Command `bili_extract_collection(bvid)` that:
+   - Fetches video info to get `ugc_season`
+   - Enumerates all episodes in the collection
+   - For each episode, fetches playurl and downloads audio
+   - Saves as `{collection_title}/{episode_title}.m4a`
+   - Returns progress (current/total) via Tauri events
+
+4. **Frontend** — When extraction detects a collection, show a progress bar with current/total count. Allow cancel. Show completed files in a list.
+
+## Acceptance criteria
+
+- [ ] Collection URL is correctly parsed and recognized
+- [ ] All videos in a collection are enumerated (handles pagination)
+- [ ] Each video's audio is extracted to a separate file in a collection-named subfolder
+- [ ] Progress is reported to frontend (current/total)
+- [ ] Cancel button stops extraction mid-way
+- [ ] Files named: `Downloads/yadig/{collection_title}/{episode_title}.m4a`
+- [ ] `cargo check` passes
+
+## Blocked by
+
+- Issue 3 (single video extraction must work first)
+
+## PRD reference
+
+- User stories #7, #18
+- Module 5: `bili_extractor` (Collection path)
+- Module 4: `bili_client` (season_archives API)
