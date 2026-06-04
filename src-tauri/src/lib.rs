@@ -1,3 +1,4 @@
+mod bili;
 mod commands;
 mod config;
 mod error;
