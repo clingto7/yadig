@@ -2,7 +2,7 @@ use tauri::State;
 use crate::config::DiscogsKeys;
 use crate::source::registry::SourceRegistry;
 use crate::source::types::*;
-use crate::error::Result;
+use crate::error::{Result, YadigError};
 
 #[tauri::command]
 pub async fn search_sources(
@@ -54,5 +54,37 @@ pub async fn update_discogs_keys(
 ) -> Result<()> {
     *keys.key.write().unwrap() = if key.is_empty() { None } else { Some(key) };
     *keys.secret.write().unwrap() = if secret.is_empty() { None } else { Some(secret) };
+    Ok(())
+}
+
+/// Download an audio file to the user's Downloads folder
+#[tauri::command]
+pub async fn download_audio(url: String, filename: String) -> Result<String> {
+    let downloads = dirs_next::download_dir()
+        .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
+    let filepath = downloads.join(&filename);
+
+    let client = reqwest::Client::new();
+    let resp = client.get(&url).send().await
+        .map_err(|e| YadigError::Network(format!("Download failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(YadigError::Network(format!("Download HTTP error: {}", resp.status())));
+    }
+
+    let bytes = resp.bytes().await
+        .map_err(|e| YadigError::Network(format!("Download read error: {}", e)))?;
+
+    std::fs::write(&filepath, &bytes)
+        .map_err(|e| YadigError::Network(format!("File write error: {}", e)))?;
+
+    Ok(filepath.to_string_lossy().to_string())
+}
+
+/// Open a URL in the system default browser
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<()> {
+    open::that(&url)
+        .map_err(|e| YadigError::Network(format!("Failed to open URL: {}", e)))?;
     Ok(())
 }

@@ -84,6 +84,13 @@ impl SourceRegistry {
             }
         }
 
+        // Sort by relevance score (higher first), items without score go last
+        items.sort_by(|a, b| {
+            let sa = a.relevance_score.unwrap_or(0.0);
+            let sb = b.relevance_score.unwrap_or(0.0);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         let total = items.len();
         let has_more = items.len() >= limit;
 

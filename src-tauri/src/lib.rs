@@ -1,12 +1,15 @@
 mod commands;
 mod config;
 mod error;
+mod http_client;
 mod source;
 
 use config::DiscogsKeys;
 use source::registry::SourceRegistry;
 use source::rss::pitchfork::PitchforkSource;
+use source::rss::feeds::{StereogumSource, FaderSource};
 use source::api::discogs::DiscogsSource;
+use source::api::jamendo::JamendoSource;
 use source::scraper::bandcamp::BandcampSource;
 use source::scraper::albumoftheyear::AlbumOfTheYearSource;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -42,6 +45,9 @@ pub fn run() {
     registry.register(Box::new(DiscogsSource::new(discogs_keys.clone())));
     registry.register(Box::new(BandcampSource::new()));
     registry.register(Box::new(AlbumOfTheYearSource::new()));
+    registry.register(Box::new(JamendoSource::new()));
+    registry.register(Box::new(StereogumSource::new()));
+    registry.register(Box::new(FaderSource::new()));
 
     tauri::Builder::default()
         .plugin(
@@ -59,6 +65,8 @@ pub fn run() {
             commands::search::list_sources,
             commands::search::set_source_enabled,
             commands::search::update_discogs_keys,
+            commands::search::download_audio,
+            commands::search::open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");
