@@ -1,10 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download } from "lucide-react";
+import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music } from "lucide-react";
 import { tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
 import { usePlayer } from "@/lib/player-context";
 import type { ContentItem, SearchResult } from "@/types/source";
+import type { ExtractionResult, AudioSegment } from "@/lib/tauri";
+
+const BILI_URL_RE = /(?:bilibili\.com\/video\/BV|b23\.tv\/|space\.bilibili\.com\/.*collectiondetail)/i;
 
 const SOURCE_TAB_ALL = "__all__";
 
@@ -14,6 +17,12 @@ export function SearchPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [activeTab, setActiveTab] = useState(SOURCE_TAB_ALL);
   const savedSearch = useRef(false);
+
+  // Bilibili extraction state
+  const isBiliUrl = BILI_URL_RE.test(query);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionResult, setExtractionResult] = useState<ExtractionResult | null>(null);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
 
   const { data: sources } = useQuery({
     queryKey: ["sources"],
@@ -72,9 +81,26 @@ export function SearchPage() {
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (query.trim()) {
+    if (isBiliUrl) {
+      handleBiliExtract();
+    } else if (query.trim()) {
       setSearchTerm(query.trim());
       setShowHistory(false);
+    }
+  }
+
+  async function handleBiliExtract() {
+    setExtracting(true);
+    setExtractionError(null);
+    setExtractionResult(null);
+    setSearchTerm(""); // clear normal search
+    try {
+      const result = await tauri.biliExtractAudio({ url: query.trim() });
+      setExtractionResult(result);
+    } catch (e) {
+      setExtractionError(String(e));
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -182,9 +208,22 @@ export function SearchPage() {
           </div>
           <button
             type="submit"
-            className="h-10 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            disabled={extracting}
+            className="h-10 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            Search
+            {extracting ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Extracting...
+              </span>
+            ) : isBiliUrl ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Music className="h-3.5 w-3.5" />
+                Extract Audio
+              </span>
+            ) : (
+              "Search"
+            )}
           </button>
         </form>
       </header>
@@ -221,6 +260,16 @@ export function SearchPage() {
       )}
 
       <div className="flex-1 overflow-y-auto p-6">
+        {/* Bilibili extraction results */}
+        {extractionResult && (
+          <BiliExtractionResult result={extractionResult} />
+        )}
+        {extractionError && (
+          <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+            {extractionError}
+          </div>
+        )}
+
         {isLoading && (
           <div className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -490,6 +539,103 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
       >
         <Star className={`h-4 w-4 ${isFav ? "fill-primary text-primary" : ""}`} />
       </button>
+    </div>
+  );
+}
+
+function BiliExtractionResult({ result }: { result: ExtractionResult }) {
+  const player = usePlayer();
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  async function handlePlaySegment(seg: AudioSegment) {
+    // Fetch fresh playurl (stream URLs expire in 120min)
+    try {
+      // Extract bvid from the segment's file path context — use audioUrl directly
+      if (seg.audioUrl) {
+        player.play({
+          sourceId: "bilibili",
+          title: `${result.videoTitle} - ${seg.title}`,
+          url: "",
+          audioUrl: seg.audioUrl,
+          duration: seg.duration,
+        });
+      }
+    } catch (e) {
+      console.error("Play failed:", e);
+    }
+  }
+
+  async function handleDownloadSegment(seg: AudioSegment) {
+    setDownloading(seg.title);
+    try {
+      const safeName = `${result.videoTitle} - ${seg.title}`.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
+      await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.m4a` });
+    } catch (e) {
+      console.error("Download failed:", e);
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  function formatDuration(seconds?: number): string {
+    if (!seconds) return "";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Music className="h-4 w-4 text-primary" />
+        <h3 className="font-medium">{result.videoTitle}</h3>
+        <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+          {result.extractionType}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {result.segments.length} segment{result.segments.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {result.segments.map((seg: AudioSegment, i: number) => (
+          <div
+            key={i}
+            className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-muted-foreground tabular-nums w-6">{i + 1}</span>
+              <span className="text-sm truncate">{seg.title}</span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {formatDuration(seg.duration)}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {seg.quality}K
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handlePlaySegment(seg)}
+                className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-primary"
+                title="Play"
+              >
+                <Play className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => handleDownloadSegment(seg)}
+                disabled={downloading === seg.title}
+                className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-primary disabled:opacity-50"
+                title="Download"
+              >
+                {downloading === seg.title ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
