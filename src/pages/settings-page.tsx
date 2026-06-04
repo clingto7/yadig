@@ -206,7 +206,10 @@ function BiliLoginSection() {
   const [qrStatus, setQrStatus] = useState<string>("");
   const [qrImg, setQrImg] = useState<string | null>(null);
   const [showCookieInput, setShowCookieInput] = useState(false);
+  const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [sessdata, setSessdata] = useState("");
+  const [biliUsername, setBiliUsername] = useState("");
+  const [biliPassword, setBiliPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const checkStatus = useCallback(async () => {
@@ -283,6 +286,20 @@ function BiliLoginSection() {
     }
   }
 
+  async function handlePasswordLogin() {
+    setError(null);
+    try {
+      const msg = await tauri.biliPasswordLogin({ username: biliUsername.trim(), password: biliPassword });
+      console.log("Password login:", msg);
+      setBiliUsername("");
+      setBiliPassword("");
+      setShowPasswordInput(false);
+      await checkStatus();
+    } catch (e) {
+      setError(`Password login failed: ${e}`);
+    }
+  }
+
   async function handleLogout() {
     try {
       await tauri.biliLogout();
@@ -343,13 +360,20 @@ function BiliLoginSection() {
               <span className="text-xs text-muted-foreground">(max 64K audio)</span>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={startQrLogin}
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
                 <QrCode className="h-3.5 w-3.5" />
                 Login with QR Code
+              </button>
+              <button
+                onClick={() => setShowPasswordInput(!showPasswordInput)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-secondary"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                Account & Password
               </button>
               <button
                 onClick={() => setShowCookieInput(!showCookieInput)}
@@ -374,6 +398,32 @@ function BiliLoginSection() {
                     Open link in browser
                   </a> if QR code doesn't work
                 </p>
+              </div>
+            )}
+
+            {showPasswordInput && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={biliUsername}
+                  onChange={(e) => setBiliUsername(e.target.value)}
+                  placeholder="Bilibili username / phone"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <input
+                  type="password"
+                  value={biliPassword}
+                  onChange={(e) => setBiliPassword(e.target.value)}
+                  placeholder="Password"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  onClick={handlePasswordLogin}
+                  disabled={!biliUsername.trim() || !biliPassword.trim()}
+                  className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Login
+                </button>
               </div>
             )}
 

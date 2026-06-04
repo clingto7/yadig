@@ -113,7 +113,7 @@ pub async fn bili_qr_login_poll(
     })
 }
 
-/// Login with SESSDATA cookie string.
+/// Login with Bilibili cookie (SESSDATA).
 #[tauri::command]
 pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> Result<()> {
     if sessdata.trim().is_empty() {
@@ -121,6 +121,73 @@ pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> R
     }
     auth.set_cookie(&sessdata);
     Ok(())
+}
+
+/// Login with Bilibili username and password.
+/// Note: This may trigger CAPTCHA verification. If login fails with captcha error,
+/// use bili_cookie_login with SESSDATA instead.
+#[tauri::command]
+pub async fn bili_password_login(
+    auth: State<'_, BiliAuth>,
+    username: String,
+    password: String,
+) -> Result<String> {
+    if username.trim().is_empty() || password.trim().is_empty() {
+        return Err(YadigError::NotFound("Username and password cannot be empty".into()));
+    }
+
+    let client = crate::http_client::build_client("yadig/0.1.0");
+    let params = [
+        ("username", username.as_str()),
+        ("password", password.as_str()),
+        ("keep_login", "true"),
+    ];
+
+    let resp = client
+        .post("https://passport.bilibili.com/x/passport-login/oauth2/login")
+        .header("Referer", "https://www.bilibili.com")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| YadigError::Network(format!("Password login failed: {}", e)))?;
+
+    let data: serde_json::Value = resp.json().await
+        .map_err(|e| YadigError::Network(format!("Password login parse error: {}", e)))?;
+
+    let code = data["code"].as_i64().unwrap_or(-1);
+    let message = data["message"].as_str().unwrap_or("unknown error").to_string();
+
+    if code != 0 {
+        return Err(YadigError::Network(format!(
+            "Login failed ({}): {}. If CAPTCHA is required, use Cookie Login instead (copy SESSDATA from browser).",
+            code, message
+        )));
+    }
+
+    // Extract session from cookie_info
+    let cookies = &data["data"]["cookie_info"]["cookies"];
+    let sessdata = cookies.as_array()
+        .and_then(|arr| arr.iter().find(|c| c["name"] == "SESSDATA"))
+        .and_then(|c| c["value"].as_str().map(String::from));
+    let bili_jct = cookies.as_array()
+        .and_then(|arr| arr.iter().find(|c| c["name"] == "bili_jct"))
+        .and_then(|c| c["value"].as_str().map(String::from));
+    let dede_user_id = cookies.as_array()
+        .and_then(|arr| arr.iter().find(|c| c["name"] == "DedeUserID"))
+        .and_then(|c| c["value"].as_str().map(String::from));
+
+    if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) = (sessdata, bili_jct, dede_user_id) {
+        let session = BiliSession {
+            sessdata,
+            bili_jct,
+            dede_user_id,
+            vip_status: 0,
+        };
+        auth.set_session(session);
+        Ok("Login successful".to_string())
+    } else {
+        Err(YadigError::NotFound("Login succeeded but couldn't extract session cookies".into()))
+    }
 }
 
 /// Logout — clear session.

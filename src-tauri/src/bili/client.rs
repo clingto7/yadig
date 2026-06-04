@@ -42,9 +42,10 @@ impl BiliClient {
             .map_err(|e| YadigError::Network(format!("video_info parse error: {}", e)))?;
 
         if body.code != 0 {
-            eprintln!("[video_info] error: code={} message={}", body.code, body.message);
+            eprintln!("[video_info] ERROR: code={} message='{}'", body.code, body.message);
             return Err(YadigError::NotFound(format!(
-                "Bilibili API error ({}): {}", body.code, body.message
+                "Bilibili API error ({}): {}",
+                body.code, body.message
             )));
         }
 

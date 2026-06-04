@@ -59,6 +59,9 @@ export const tauri = {
   biliCookieLogin: (params: { sessdata: string }): Promise<void> =>
     invoke("bili_cookie_login", params),
 
+  biliPasswordLogin: (params: { username: string; password: string }): Promise<string> =>
+    invoke("bili_password_login", params),
+
   biliLogout: (): Promise<void> => invoke("bili_logout"),
 
   biliSessionStatus: (): Promise<{ loggedIn: boolean; username: string | null; isPremium: boolean }> =>
