@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>yadig 媒体工作站功能与本轮实现报告</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-soft: #eef3f6;
+      --text: #17202a;
+      --muted: #5d6b7a;
+      --line: #d9e1e8;
+      --accent: #006d77;
+      --accent-soft: #e2f3f3;
+      --ok: #16734c;
+      --warn: #a15c00;
+      --risk: #b3261e;
+      --code-bg: #edf2f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+
+    header,
+    section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    header {
+      padding: 32px;
+      margin-bottom: 18px;
+    }
+
+    section {
+      padding: 28px;
+      margin-top: 18px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      letter-spacing: 0;
+      line-height: 1.25;
+    }
+
+    h1 {
+      font-size: 32px;
+    }
+
+    h2 {
+      font-size: 22px;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 17px;
+      margin: 20px 0 8px;
+    }
+
+    p {
+      margin: 10px 0 0;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: var(--code-bg);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .summary-grid,
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .soft {
+      background: #fbfcfd;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge.ok {
+      color: var(--ok);
+      background: #e7f4ec;
+    }
+
+    .badge.warn {
+      color: var(--warn);
+      background: #fff1df;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      background: var(--accent-soft);
+    }
+
+    table {
+      width: 100%;
+      margin-top: 14px;
+      border-collapse: collapse;
+      table-layout: fixed;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    th {
+      background: #eef3f7;
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    th:last-child,
+    td:last-child {
+      border-right: 0;
+    }
+
+    .path-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .path-list div {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #f3f6f8;
+      font-size: 14px;
+    }
+
+    @media (max-width: 820px) {
+      main {
+        padding: 24px 14px 48px;
+      }
+
+      header,
+      section {
+        padding: 20px;
+      }
+
+      .summary-grid,
+      .feature-grid,
+      .path-list {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="meta">生成日期：2026-06-10 · 分支：main · 本轮提交：<code>de6f8aa feat: add Bilibili media workstation</code></p>
+      <h1>yadig 媒体工作站功能与本轮实现报告</h1>
+      <p>本报告说明 yadig 当前支持的主要功能、使用方法、本轮 B 站媒体工作站实现内容、验证结果和下一步建议。</p>
+      <div class="badge-row">
+        <span class="badge ok">音乐发现</span>
+        <span class="badge ok">B 站同步</span>
+        <span class="badge ok">LLM 辅助分类</span>
+        <span class="badge ok">批量音频提取计划</span>
+        <span class="badge ok">本地资源库</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>一、当前项目定位</h2>
+      <p>yadig 原本是音乐资源发现与信息聚合工具。本轮之后，项目开始向个人媒体信息、兴趣资源与音乐资料的资源管理工作站扩展。B 站相关能力是第一条垂直媒体链路，覆盖关注、收藏、稍后再看、元数据整理和音乐类视频音频提取。</p>
+      <div class="summary-grid">
+        <div class="card soft">
+          <h3>搜索与发现</h3>
+          <p>跨多个音乐与媒体源搜索艺术家、专辑、视频、乐评和资讯，并记录搜索历史。</p>
+        </div>
+        <div class="card soft">
+          <h3>资源沉淀</h3>
+          <p>将搜索收藏、B 站收藏、关注和稍后再看沉淀到本地 SQLite 数据库中。</p>
+        </div>
+        <div class="card soft">
+          <h3>智能整理</h3>
+          <p>通过 OpenAI-compatible LLM API 或本地 metadata fallback 生成分类、标签和操作建议。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>二、当前支持的功能</h2>
+      <div class="feature-grid">
+        <div class="card">
+          <h3>跨源搜索</h3>
+          <ul>
+            <li>支持 Pitchfork、Discogs、Bandcamp、Album of The Year、Jamendo、Stereogum、Fader、MusicBrainz、Last.fm、Bilibili、YouTube 等来源。</li>
+            <li>支持分页加载、来源启停、搜索历史。</li>
+            <li>可以将搜索结果加入本地收藏。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>B 站音频提取</h3>
+          <ul>
+            <li>支持 B 站视频 URL、短链和合集链接解析。</li>
+            <li>支持单视频、多 P、章节切分和合集音频提取。</li>
+            <li>使用 FFmpeg 对 B 站 DASH 音频做 remux，提高播放器兼容性。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>YouTube 音频</h3>
+          <ul>
+            <li>支持通过 yt-dlp 搜索 YouTube。</li>
+            <li>支持 YouTube URL 音频提取。</li>
+            <li>输出目录默认为 <code>Downloads/yadig</code>。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>B 站登录</h3>
+          <ul>
+            <li>支持二维码登录。</li>
+            <li>支持完整 Cookie 导入，完整 Cookie 可提供写操作所需的 <code>bili_jct</code> 和 <code>DedeUserID</code>。</li>
+            <li>支持账号密码登录入口，但遇到验证码时建议使用二维码或 Cookie。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>媒体工作站</h3>
+          <ul>
+            <li>同步 B 站收藏、关注 UP 和稍后再看。</li>
+            <li>将同步结果保存到本地媒体库。</li>
+            <li>支持 LLM 辅助分类、标签和操作建议。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>批量音频计划</h3>
+          <ul>
+            <li>从收藏和稍后再看的视频中筛出音乐类视频。</li>
+            <li>生成批量音频提取计划。</li>
+            <li>执行计划时复用已有 B 站音频提取链路。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>三、使用方法</h2>
+      <h3>启动应用</h3>
+      <ol>
+        <li>安装依赖：<code>pnpm install</code></li>
+        <li>开发运行：<code>pnpm tauri dev</code></li>
+        <li>生产构建：<code>pnpm build</code> 或 <code>pnpm tauri build</code></li>
+      </ol>
+
+      <h3>搜索与收藏</h3>
+      <ol>
+        <li>进入左侧导航的 <strong>Search</strong>。</li>
+        <li>输入艺术家、专辑、厂牌、风格、视频或事件关键词。</li>
+        <li>在结果中打开来源链接，或将感兴趣的条目加入本地收藏。</li>
+        <li>如果输入 B 站或 YouTube URL，页面会显示对应音频提取入口。</li>
+      </ol>
+
+      <h3>配置 B 站登录</h3>
+      <ol>
+        <li>进入 <strong>Settings</strong>。</li>
+        <li>在 Bilibili 区域选择 QR Code、Cookie Login 或 Account &amp; Password。</li>
+        <li>推荐 QR Code 或完整 Cookie。只导入 <code>SESSDATA</code> 可以登录读取部分信息，但同步关注/收藏等能力需要 <code>DedeUserID</code>，批量管理类能力还需要 <code>bili_jct</code>。</li>
+        <li>登录状态会通过 B 站 nav API 校验，并显示普通账号或 Premium 状态。</li>
+      </ol>
+
+      <h3>配置 LLM</h3>
+      <ol>
+        <li>进入 <strong>Settings</strong> 的 API Keys 区域。</li>
+        <li>填写 Provider、Base URL、Model 和 API Key。</li>
+        <li>当前调用 OpenAI-compatible <code>/chat/completions</code> 接口，并要求模型返回 JSON。</li>
+        <li>没有 API Key 或调用失败时，工作站会使用本地 metadata fallback，并在界面提示 fallback 原因。</li>
+      </ol>
+
+      <h3>使用媒体工作站</h3>
+      <ol>
+        <li>进入左侧导航的 <strong>Workstation</strong>。</li>
+        <li>点击 <strong>Sync Bilibili</strong> 同步收藏、关注和稍后再看。</li>
+        <li>点击 <strong>Analyze Metadata</strong> 让 LLM 根据标题、分区、UP 信息等元数据生成分类。</li>
+        <li>点击 <strong>Create Plan</strong> 从音乐候选视频生成批量音频提取计划。</li>
+        <li>点击 <strong>Extract Audio</strong> 执行批量提取，输出文件在 <code>Downloads/yadig</code>。</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>四、本轮工作内容</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>完成内容</th>
+            <th>关键文件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>B 站同步</td>
+            <td>新增收藏、关注、稍后再看的同步入口，将远端数据规范化为通用本地媒体库条目。</td>
+            <td><code>src-tauri/src/bili/client.rs</code><br><code>src-tauri/src/library.rs</code></td>
+          </tr>
+          <tr>
+            <td>本地资源库</td>
+            <td>新增媒体库、标签、LLM 分析记录、操作计划相关 SQLite 表，并在前端提供持久化 helper。</td>
+            <td><code>src-tauri/migrations/004_library_tables.sql</code><br><code>src/lib/db.ts</code></td>
+          </tr>
+          <tr>
+            <td>LLM 集成</td>
+            <td>新增 OpenAI-compatible metadata 分析调用、JSON 解析、fallback 和结果来源标识。</td>
+            <td><code>src-tauri/src/llm.rs</code><br><code>src/lib/tauri.ts</code></td>
+          </tr>
+          <tr>
+            <td>媒体工作站页面</td>
+            <td>新增 Workstation 页面、侧边栏入口、同步按钮、分析按钮、计划生成和批量提取入口。</td>
+            <td><code>src/pages/workstation-page.tsx</code><br><code>src/components/layout/app-sidebar.tsx</code></td>
+          </tr>
+          <tr>
+            <td>B 站登录修复</td>
+            <td>修复前后端 camelCase 契约不一致；完整 Cookie 解析；QR 登录响应不再泄露 cookie 到日志。</td>
+            <td><code>src-tauri/src/commands/bilibili.rs</code><br><code>src-tauri/src/bili/session.rs</code></td>
+          </tr>
+          <tr>
+            <td>批量音频提取</td>
+            <td>针对音乐类收藏和稍后再看视频生成批量提取计划，并复用已有 B 站音频提取器执行。</td>
+            <td><code>src-tauri/src/commands/library.rs</code><br><code>src-tauri/src/bili/client.rs</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <strong>安全修复：</strong>本轮 review 中发现 QR 登录成功响应包含登录凭据。现在日志只输出状态摘要，不再输出 callback URL 或 Cookie 值。
+      </div>
+    </section>
+
+    <section>
+      <h2>五、数据与隐私说明</h2>
+      <ul>
+        <li>B 站 session 当前保存在运行时内存状态中，前端设置项保存在 Tauri Store 的 <code>settings.json</code>。</li>
+        <li>媒体库、搜索历史、收藏、LLM 分析结果和操作计划保存在本地 SQLite 数据库 <code>sqlite:yadig.db</code>。</li>
+        <li>执行 LLM metadata 分析时，条目的标题、作者、类型和 raw metadata 会发送给配置的 LLM API。</li>
+        <li>没有配置 API Key 或 API 调用失败时，应用会使用本地规则 fallback，并提示 fallback 原因。</li>
+        <li>批量音频提取只在用户确认后执行，输出到本机 <code>Downloads/yadig</code>。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>六、验证结果</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>命令</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>cargo test --manifest-path src-tauri/Cargo.toml</code></td>
+            <td>通过。合并前 feature worktree 结果：59 passed。</td>
+          </tr>
+          <tr>
+            <td><code>pnpm build</code></td>
+            <td>通过。TypeScript 编译和 Vite 生产构建均完成。</td>
+          </tr>
+          <tr>
+            <td><code>git diff --check</code></td>
+            <td>通过。没有 whitespace error。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="meta">合并后 main 分支的最终验证结果以本轮终端输出和最终回复为准。</p>
+    </section>
+
+    <section>
+      <h2>七、已知限制与下一步</h2>
+      <ul>
+        <li>当前 LLM 分析基于元数据，不读取视频字幕、简介全文或评论。</li>
+        <li>字幕提取、无字幕音频转文字、视频要点总结尚未实现，是下一阶段自然扩展。</li>
+        <li>微信、知乎等媒体源尚未接入，但本轮新增的本地媒体库模型可以作为后续扩展基础。</li>
+        <li>批量管理目前重点是计划与音频提取，批量移动收藏夹、删除、归档等写操作还需要更细粒度确认和失败恢复设计。</li>
+        <li>账号与 API Key 的长期安全存储可以后续升级到系统 keychain 或更细粒度加密方案。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>八、相关文件索引</h2>
+      <div class="path-list">
+        <div><code>src/pages/workstation-page.tsx</code><br>媒体工作站主界面。</div>
+        <div><code>src/pages/settings-page.tsx</code><br>B 站登录和 LLM 配置入口。</div>
+        <div><code>src-tauri/src/commands/library.rs</code><br>同步、LLM 分析、批量音频计划命令。</div>
+        <div><code>src-tauri/src/llm.rs</code><br>OpenAI-compatible LLM 调用与 fallback。</div>
+        <div><code>src-tauri/src/library.rs</code><br>通用媒体库 domain model。</div>
+        <div><code>src-tauri/migrations/004_library_tables.sql</code><br>媒体库相关 SQLite 表结构。</div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
