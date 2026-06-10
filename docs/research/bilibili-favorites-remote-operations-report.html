@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bilibili 收藏夹远端操作 MVP 实现报告</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-soft: #eef5f2;
+      --text: #17212b;
+      --muted: #5d6b78;
+      --line: #d8e0e7;
+      --accent: #0f766e;
+      --accent-2: #2563eb;
+      --ok: #1f7a4c;
+      --warn: #9a5a00;
+      --risk: #b42318;
+      --code: #eef2f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+
+    header,
+    section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    header {
+      padding: 32px;
+    }
+
+    section {
+      margin-top: 24px;
+      padding: 28px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 32px;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 24px;
+    }
+
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 18px;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 12px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      border-radius: 4px;
+      padding: 2px 5px;
+      background: var(--code);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    table {
+      width: 100%;
+      margin: 16px 0;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--panel-soft);
+      font-weight: 650;
+    }
+
+    .meta {
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel-soft);
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 9px;
+      font-size: 12px;
+      font-weight: 650;
+      background: var(--code);
+      color: var(--muted);
+    }
+
+    .ok {
+      color: var(--ok);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .risk {
+      color: var(--risk);
+    }
+
+    .commit-list {
+      list-style: none;
+      margin-left: 0;
+    }
+
+    @media (max-width: 720px) {
+      main {
+        padding: 24px 14px 48px;
+      }
+
+      header,
+      section {
+        padding: 20px;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Bilibili 收藏夹远端操作 MVP 实现报告</h1>
+      <p class="meta">生成日期：2026-06-11。范围：<code>docs/prd/PRD-bilibili-favorites-remote-operations.md</code> 对应 issue 01-06。</p>
+      <p>本轮完成了收藏夹同步、远端 move/delete 计划、确认执行、执行历史、错误脱敏和人工 smoke-test checklist。真实账号写入验证尚未执行，应按 issue06 使用一次性收藏夹和非重要测试视频完成。</p>
+    </header>
+
+    <section>
+      <h2>完成摘要</h2>
+      <div class="grid">
+        <div class="card">
+          <strong>本地库同步</strong>
+          <p>同步 Bilibili 收藏夹、收藏视频和视频-收藏夹 membership，并保留远端 resource id/type。</p>
+        </div>
+        <div class="card">
+          <strong>安全计划</strong>
+          <p>Workstation 可在指定收藏夹中选择视频，生成 move/delete draft。不可执行项以 skipped/blocked 暴露。</p>
+        </div>
+        <div class="card">
+          <strong>远端执行</strong>
+          <p>move/delete 执行需要用户确认；delete 需要输入 <code>DELETE</code>。执行按批次处理并在风险类错误后停止。</p>
+        </div>
+        <div class="card">
+          <strong>审计反馈</strong>
+          <p>Workstation 显示最近 favorite 操作历史、每项状态、source/target/title/action 和脱敏错误。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>提交记录</h2>
+      <ul class="commit-list">
+        <li><code>388c59e</code> <span class="badge">Issue 01</span> 同步 Bilibili 收藏夹和 membership。</li>
+        <li><code>2a441a0</code> <span class="badge">Issue 02</span> 创建收藏夹 move/delete 操作草稿。</li>
+        <li><code>dfaa4dd</code> <span class="badge">Issue 03</span> 执行收藏夹 move 计划。</li>
+        <li><code>9c20a14</code> <span class="badge">Issue 04</span> 执行收藏夹 delete 计划。</li>
+        <li><code>6e3e8dc</code> <span class="badge">Issue 05</span> 展示执行历史、状态和脱敏错误。</li>
+        <li><code>3aa4760</code> <span class="badge">Issue 06</span> 添加远端写入人工 smoke-test checklist。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>验收覆盖</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Issue</th>
+            <th>结果</th>
+            <th>主要覆盖点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>01 Sync</td>
+            <td class="ok">完成</td>
+            <td>收藏夹列表、收藏夹内容、关注/稍后再看 scope、membership 本地持久化。</td>
+          </tr>
+          <tr>
+            <td>02 Draft plans</td>
+            <td class="ok">完成</td>
+            <td>选择指定收藏夹内视频，生成 move/delete draft，校验 source/target/resource identity。</td>
+          </tr>
+          <tr>
+            <td>03 Move execution</td>
+            <td class="ok">完成</td>
+            <td>显式确认、按 source folder 批处理、成功后更新本地 membership、风险错误阻断剩余项。</td>
+          </tr>
+          <tr>
+            <td>04 Delete execution</td>
+            <td class="ok">完成</td>
+            <td>强确认文本、按 source folder 批处理、成功后只删除对应收藏夹 membership、风险错误阻断。</td>
+          </tr>
+          <tr>
+            <td>05 History</td>
+            <td class="ok">完成</td>
+            <td>最近 favorite 操作历史、plan/item 状态、source/target/title/action、retryable/manual-action 分类、错误脱敏。</td>
+          </tr>
+          <tr>
+            <td>06 Checklist</td>
+            <td class="ok">完成</td>
+            <td>一次性收藏夹、登录校验、同步校验、move/delete 步骤、Web 确认、状态记录和脱敏响应记录。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>验证证据</h2>
+      <p>Issue05 代码改动在隔离 worktree 和干净补丁目录中验证。</p>
+      <ul>
+        <li><code>pnpm exec tsc --noEmit --project tsconfig.app.json --pretty false</code>：通过。</li>
+        <li><code>pnpm build</code>：通过，Vite 生产构建成功。</li>
+        <li><code>cargo test --manifest-path src-tauri/Cargo.toml</code>：通过，75 个 Rust 测试通过，0 失败。</li>
+        <li><code>git diff --cached --check</code>：Issue05 和 Issue06 staged patch 均通过 whitespace 检查。</li>
+      </ul>
+      <p class="warn">未执行真实 Bilibili 远端写入 smoke test。原因是它会修改真实账号状态，必须由人工按 issue06 在一次性收藏夹和非重要视频上执行。</p>
+    </section>
+
+    <section>
+      <h2>安全状态</h2>
+      <ul>
+        <li>远端写操作不会由 LLM 自动执行，必须由用户先生成计划再确认执行。</li>
+        <li>move 使用确认弹窗；delete 必须输入 <code>DELETE</code>。</li>
+        <li>write session 必须具备完整 Cookie/CSRF/account identity；缺失时阻断执行。</li>
+        <li>执行历史和当前预览通过共享 helper 脱敏错误，避免展示 raw cookie、CSRF、callback URL 和账号 ID。</li>
+        <li>blocked 错误用于登录、CSRF、captcha、rate-limit、risk-control 等需要人工处理的状态；普通 failed 可作为潜在 retryable 项展示。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>已知限制</h2>
+      <ul>
+        <li>当前不支持创建、重命名或删除 Bilibili 收藏夹。</li>
+        <li>当前不支持 copy favorite；已实现语义是 move 和 delete。</li>
+        <li>执行历史保存为新的 plan 记录，草稿和执行结果都会出现在最近历史中。</li>
+        <li>真实 API 行为仍依赖 Bilibili Web 接口，可能受登录状态、风控或接口变更影响。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>下一步计划</h2>
+      <ol>
+        <li>按 issue06 完成一次真实远端 smoke test，只使用 <code>yadig-smoke-source-YYYYMMDD</code> 和 <code>yadig-smoke-target-YYYYMMDD</code> 这类一次性收藏夹。</li>
+        <li>基于 smoke test 结果补充 API 响应码和风险控制消息样本，保持所有记录脱敏。</li>
+        <li>规划后续 issue：创建收藏夹、把选中视频加入收藏夹、移动到新建收藏夹，以及更明确地区分 copy/add 与 move 语义。</li>
+        <li>补一层前端测试基础设施时，将 <code>operation-plan-history</code> helper 的 contract check 升级为真实单元测试。</li>
+        <li>评估是否给 operation plan schema 增加稳定 plan UUID 或 execution group，便于把草稿和一次执行结果关联起来。</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>
