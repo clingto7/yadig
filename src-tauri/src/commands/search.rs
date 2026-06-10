@@ -62,7 +62,27 @@ pub async fn update_discogs_keys(
 pub async fn download_audio(url: String, filename: String) -> Result<String> {
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
-    let filepath = downloads.join(&filename);
+
+    // Sanitize and truncate filename to avoid ENAMETOOLONG
+    let safe_name: String = filename.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect();
+    // Truncate to 200 bytes to leave room for the full path prefix (EXT4: 255 per component)
+    let truncated = if safe_name.len() > 200 {
+        let mut s = String::new();
+        for c in safe_name.chars() {
+            if s.len() + c.len_utf8() > 200 { break; }
+            s.push(c);
+        }
+        s
+    } else {
+        safe_name
+    };
+
+    let filepath = downloads.join(&truncated);
 
     let client = reqwest::Client::new();
     let resp = client.get(&url).send().await
