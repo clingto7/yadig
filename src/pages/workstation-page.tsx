@@ -16,6 +16,7 @@ import {
   listLibraryItemsWithCollections,
   saveLlmAnalysis,
   saveOperationPlan,
+  updateBiliFavoriteDeleteMemberships,
   updateBiliFavoriteMoveMemberships,
   upsertBiliSyncResult,
   type LibraryItemWithCollections,
@@ -343,6 +344,48 @@ export function WorkstationPage() {
     }
   }
 
+  async function executeFavoriteDeletePlan() {
+    if (!plan || plan.kind !== "bili_batch_delete") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This delete plan has no pending items to execute.");
+      return;
+    }
+    const confirmationText = window.prompt(
+      `Delete ${pendingCount} favorite video${pendingCount === 1 ? "" : "s"} from the selected Bilibili favorite folder? Type DELETE to confirm.`
+    );
+    if (confirmationText !== "DELETE") {
+      setMessage("Delete execution cancelled.");
+      return;
+    }
+
+    setBusy("favorite-delete-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteDeletePlan({ plan, confirmationText });
+      await updateBiliFavoriteDeleteMemberships(result.plan);
+      await saveOperationPlan(result.plan);
+      const [storedItems, storedFolders] = await Promise.all([
+        listLibraryItemsWithCollections(),
+        listLibraryCollections("bili_favorite_folder"),
+      ]);
+      setItems(storedItems);
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      setSelectedFavoriteIds(new Set());
+      const successCount = result.plan.items.filter((item) => item.status === "success").length;
+      setMessage(
+        result.stopped
+          ? `Delete stopped after ${successCount}/${result.plan.items.length} successful items.`
+          : `Deleted ${successCount}/${result.plan.items.length} favorite items.`
+      );
+    } catch (err) {
+      setMessage(`Favorite delete execution failed: ${err}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-border p-6">
@@ -496,6 +539,16 @@ export function WorkstationPage() {
                   >
                     <FolderInput className="h-4 w-4" />
                     Execute Move
+                  </button>
+                )}
+                {plan.kind === "bili_batch_delete" && (
+                  <button
+                    onClick={() => void executeFavoriteDeletePlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-destructive px-3 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Execute Delete
                   </button>
                 )}
               </div>

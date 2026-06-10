@@ -40,6 +40,12 @@ pub struct FavoriteMoveBatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteDeleteBatch {
+    pub source_media_id: String,
+    pub resources: Vec<FavoriteMoveResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FavoriteWriteErrorKind {
     Failed,
     Blocked,
@@ -212,6 +218,51 @@ impl BiliClient {
                 },
                 message: redact_bili_error(&format!(
                     "Bilibili favorite move response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete_favorite_resources(
+        &self,
+        batch: &FavoriteDeleteBatch,
+    ) -> std::result::Result<(), FavoriteWriteError> {
+        if batch.resources.is_empty() {
+            return Ok(());
+        }
+
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/resource/batch-del")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_delete_form(&session, batch))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite delete request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite delete response parse error: {err}"
                 )),
             })?;
 
@@ -893,6 +944,25 @@ fn favorite_move_form(
     ])
 }
 
+fn favorite_delete_form(
+    session: &BiliSession,
+    batch: &FavoriteDeleteBatch,
+) -> BTreeMap<String, String> {
+    let resources = batch
+        .resources
+        .iter()
+        .map(|resource| format!("{}:{}", resource.id, resource.resource_type))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    BTreeMap::from([
+        ("media_id".to_string(), batch.source_media_id.clone()),
+        ("resources".to_string(), resources),
+        ("platform".to_string(), "web".to_string()),
+        ("csrf".to_string(), session.bili_jct.clone()),
+    ])
+}
+
 fn favorite_write_api_error(code: i32, message: &str) -> FavoriteWriteError {
     let blocking = matches!(code, -101 | -111 | -400 | 412)
         || message.contains("csrf")
@@ -1204,6 +1274,40 @@ mod tests {
         );
         assert_eq!(form.get("platform").map(String::as_str), Some("web"));
         assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+    }
+
+    #[test]
+    fn builds_favorite_delete_form_for_resource_pairs() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let batch = FavoriteDeleteBatch {
+            source_media_id: "100".to_string(),
+            resources: vec![
+                FavoriteMoveResource {
+                    id: "987654321".to_string(),
+                    resource_type: "2".to_string(),
+                },
+                FavoriteMoveResource {
+                    id: "123456789".to_string(),
+                    resource_type: "2".to_string(),
+                },
+            ],
+        };
+
+        let form = favorite_delete_form(&session, &batch);
+
+        assert_eq!(form.get("media_id").map(String::as_str), Some("100"));
+        assert_eq!(
+            form.get("resources").map(String::as_str),
+            Some("987654321:2,123456789:2")
+        );
+        assert_eq!(form.get("platform").map(String::as_str), Some("web"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+        assert_eq!(form.get("mid"), None);
     }
 
     #[test]

@@ -718,3 +718,43 @@ export async function updateBiliFavoriteMoveMemberships(plan: OperationPlan): Pr
     );
   }
 }
+
+export async function updateBiliFavoriteDeleteMemberships(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_batch_delete") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const sourceCollectionExternalId = item.sourceCollectionExternalId?.trim();
+    if (!sourceCollectionExternalId) {
+      throw new Error(`Cannot update local delete membership for ${item.title}: missing source folder`);
+    }
+
+    const itemRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_items
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND item_type = 'bili_favorite_video'
+       LIMIT 1`,
+      [item.externalId]
+    );
+    const sourceRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_collections
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND collection_type = 'bili_favorite_folder'
+       LIMIT 1`,
+      [sourceCollectionExternalId]
+    );
+    const itemId = itemRows[0]?.id;
+    const sourceCollectionId = sourceRows[0]?.id;
+    if (!itemId || !sourceCollectionId) continue;
+
+    await d.execute(
+      `DELETE FROM library_item_collections
+       WHERE item_id = $1 AND collection_id = $2`,
+      [itemId, sourceCollectionId]
+    );
+  }
+}
