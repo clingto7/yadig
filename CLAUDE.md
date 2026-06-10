@@ -80,17 +80,21 @@ Migrations in `src-tauri/migrations/`: favorites, search_history, rss_feeds, art
 
 ## Hard-Won Lessons
 
-### Filename Truncation — sanitize AND truncate at every entry point
+### Filename Truncation — sanitize AND truncate at EVERY entry point
 
-Bilibili video titles can be 130+ bytes (Chinese = 3 bytes/char). Adding chapter names can push filenames past EXT4's 255-byte limit → `ENAMETOOLONG`.
+`File name too long (os error 36)` — 这是一个反复咬人的 bug，因为文件名创建点有多个，每次只修一个点是不够的。
 
-**Always truncate at every filename entry point:**
-- `commands/search.rs` `download_audio()` — backend receives filename from frontend
-- `bili/client.rs` `sanitize_filename()` — used for local file output paths
-- `bili/ffmpeg.rs` `temp_path()` — use hash instead of full title
-- Frontend `safeName` construction — strip special chars AND limit length
+**根因**: Bilibili 标题（中文字符每个 3 字节）加上章节名拼接后，可能超过 EXT4 255 字节限制。
 
-Threshold: 200 bytes per filename component, leaving room for extension and prefix.
+**所有文件名创建路径（逐个修复的经验）：**
+1. `commands/search.rs` `download_audio()` — Tauri 命令，前端传入完整文件名。**必须**在 Rust 端 sanitize + truncate
+2. `bili/client.rs` `sanitize_filename()` — 用于本地文件输出路径。截断到 180 字节
+3. `bili/client.rs` `make_download_filename()` — **统一入口**，拼接 title + part + extension 并确保总长度不超过 200 字节
+4. `bili/ffmpeg.rs` `temp_path()` — 用 hash 代替完整标题
+5. `bili/client.rs` `download_stream()` — 临时文件用固定短名 `.yadig_dl_tmp`（不用 `path.with_extension()`）
+6. 前端 `handleDownloadSegment` — 传给 download_audio 的 filename 参数
+
+**经验教训**: 不要假设"修了一个入口就够了"。每次修复后要检查**所有** `std::fs::write` / `File::create` / `download_dir.join` 调用点。
 
 ### Bilibili API Quirks
 
