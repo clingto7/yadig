@@ -1,11 +1,13 @@
-use tauri::State;
 use crate::bili::auth::{BiliAuth, BiliSession};
 use crate::bili::client::BiliClient;
 use crate::bili::extractor::ExtractionResult;
+use crate::bili::session::parse_cookie_session;
 use crate::error::{Result, YadigError};
+use tauri::State;
 
 /// Response for QR login start
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QrLoginStartResponse {
     pub url: String,
     pub qrcode_key: String,
@@ -13,6 +15,7 @@ pub struct QrLoginStartResponse {
 
 /// Response for QR login poll
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QrLoginPollResponse {
     pub code: i32,
     pub message: String,
@@ -21,6 +24,7 @@ pub struct QrLoginPollResponse {
 
 /// Response for session status check
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionStatusResponse {
     pub logged_in: bool,
     pub username: Option<String>,
@@ -73,15 +77,12 @@ pub async fn bili_qr_login_poll(
         .await
         .map_err(|e| YadigError::Network(format!("QR poll parse error: {}", e)))?;
 
-    // Debug: log the raw poll response
-    eprintln!("[bili_qr_login_poll] response: {}", data);
-
     // Inner code indicates QR status (86101=not scanned, 86090=scanned, 0=success, 86038=expired)
     let code = data["data"]["code"].as_i64().unwrap_or(-1) as i32;
-    let message = data["data"]["message"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let message = data["data"]["message"].as_str().unwrap_or("").to_string();
+    if !matches!(code, 86101 | 86090) {
+        eprintln!("[bili_qr_login_poll] {}", qr_poll_status_summary(&data));
+    }
 
     // On success (code 0), extract session from data.url query parameters
     let session = if code == 0 {
@@ -90,7 +91,9 @@ pub async fn bili_qr_login_poll(
         let bili_jct = extract_url_param(callback_url, "bili_jct");
         let dede_user_id = extract_url_param(callback_url, "DedeUserID");
 
-        if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) = (sessdata, bili_jct, dede_user_id) {
+        if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) =
+            (sessdata, bili_jct, dede_user_id)
+        {
             let s = BiliSession {
                 sessdata,
                 bili_jct,
@@ -116,10 +119,15 @@ pub async fn bili_qr_login_poll(
 /// Login with Bilibili cookie (SESSDATA).
 #[tauri::command]
 pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> Result<()> {
-    if sessdata.trim().is_empty() {
+    let cookie = sessdata.trim();
+    if cookie.is_empty() {
         return Err(YadigError::NotFound("SESSDATA cannot be empty".into()));
     }
-    auth.set_cookie(&sessdata);
+    if let Some(session) = parse_cookie_session(cookie) {
+        auth.set_session(session);
+    } else {
+        auth.set_cookie(cookie);
+    }
     Ok(())
 }
 
@@ -133,7 +141,9 @@ pub async fn bili_password_login(
     password: String,
 ) -> Result<String> {
     if username.trim().is_empty() || password.trim().is_empty() {
-        return Err(YadigError::NotFound("Username and password cannot be empty".into()));
+        return Err(YadigError::NotFound(
+            "Username and password cannot be empty".into(),
+        ));
     }
 
     let client = crate::http_client::build_client("yadig/0.1.0");
@@ -151,11 +161,16 @@ pub async fn bili_password_login(
         .await
         .map_err(|e| YadigError::Network(format!("Password login failed: {}", e)))?;
 
-    let data: serde_json::Value = resp.json().await
+    let data: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| YadigError::Network(format!("Password login parse error: {}", e)))?;
 
     let code = data["code"].as_i64().unwrap_or(-1);
-    let message = data["message"].as_str().unwrap_or("unknown error").to_string();
+    let message = data["message"]
+        .as_str()
+        .unwrap_or("unknown error")
+        .to_string();
 
     if code != 0 {
         return Err(YadigError::Network(format!(
@@ -166,17 +181,21 @@ pub async fn bili_password_login(
 
     // Extract session from cookie_info
     let cookies = &data["data"]["cookie_info"]["cookies"];
-    let sessdata = cookies.as_array()
+    let sessdata = cookies
+        .as_array()
         .and_then(|arr| arr.iter().find(|c| c["name"] == "SESSDATA"))
         .and_then(|c| c["value"].as_str().map(String::from));
-    let bili_jct = cookies.as_array()
+    let bili_jct = cookies
+        .as_array()
         .and_then(|arr| arr.iter().find(|c| c["name"] == "bili_jct"))
         .and_then(|c| c["value"].as_str().map(String::from));
-    let dede_user_id = cookies.as_array()
+    let dede_user_id = cookies
+        .as_array()
         .and_then(|arr| arr.iter().find(|c| c["name"] == "DedeUserID"))
         .and_then(|c| c["value"].as_str().map(String::from));
 
-    if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) = (sessdata, bili_jct, dede_user_id) {
+    if let (Some(sessdata), Some(bili_jct), Some(dede_user_id)) = (sessdata, bili_jct, dede_user_id)
+    {
         let session = BiliSession {
             sessdata,
             bili_jct,
@@ -186,7 +205,9 @@ pub async fn bili_password_login(
         auth.set_session(session);
         Ok("Login successful".to_string())
     } else {
-        Err(YadigError::NotFound("Login succeeded but couldn't extract session cookies".into()))
+        Err(YadigError::NotFound(
+            "Login succeeded but couldn't extract session cookies".into(),
+        ))
     }
 }
 
@@ -259,6 +280,7 @@ pub async fn bili_session_status(auth: State<'_, BiliAuth>) -> Result<SessionSta
 
 /// Response for playurl query
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlayUrlInfo {
     pub audio_url: String,
     pub quality: i32,
@@ -267,7 +289,10 @@ pub struct PlayUrlInfo {
 
 /// Extract audio from a Bilibili video URL and save to Downloads.
 #[tauri::command]
-pub async fn bili_extract_audio(auth: State<'_, BiliAuth>, url: String) -> Result<ExtractionResult> {
+pub async fn bili_extract_audio(
+    auth: State<'_, BiliAuth>,
+    url: String,
+) -> Result<ExtractionResult> {
     let client = BiliClient::new((*auth).clone());
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
@@ -287,7 +312,9 @@ pub async fn bili_extract_segment(
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
     let download_dir = downloads.join("yadig");
-    client.extract_segment(&bvid, cid, &title, &download_dir).await
+    client
+        .extract_segment(&bvid, cid, &title, &download_dir)
+        .await
 }
 
 /// Extract audio from a collection (合集) by mid and season_id.
@@ -301,7 +328,9 @@ pub async fn bili_extract_collection(
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
     let download_dir = downloads.join("yadig");
-    client.extract_collection(mid, season_id, &download_dir).await
+    client
+        .extract_collection(mid, season_id, &download_dir)
+        .await
 }
 
 /// Check if FFmpeg is available for chapter splitting.
@@ -320,7 +349,8 @@ pub async fn bili_get_playurl(
     let client = BiliClient::new((*auth).clone());
     let info = client.video_info(&bvid).await?;
     let play_resp = client.playurl(info.aid, cid).await?;
-    let dash = play_resp.dash
+    let dash = play_resp
+        .dash
         .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
 
     let has_session = auth.session().is_some();
@@ -337,29 +367,103 @@ pub async fn bili_get_playurl(
 
 /// Extract a query parameter from a URL string.
 fn extract_url_param(url: &str, key: &str) -> Option<String> {
-    let query_start = url.find('?')?;
-    let query = &url[query_start + 1..];
-    for pair in query.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        if parts.next()? == key {
-            let val = parts.next().unwrap_or("");
-            // URL-decode: Bilibili uses %2C for comma, etc.
-            return Some(val.replace("%2C", ",").replace("%2F", "/").replace("%2B", "+"));
-        }
-    }
-    None
+    let parsed = url::Url::parse(url).ok()?;
+    parsed
+        .query_pairs()
+        .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
+}
+
+fn qr_poll_status_summary(data: &serde_json::Value) -> String {
+    let code = data["data"]["code"].as_i64().unwrap_or(-1);
+    let message = data["data"]["message"]
+        .as_str()
+        .unwrap_or("")
+        .replace(['\n', '\r'], " ");
+    format!("code={} message='{}'", code, message)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_url_param;
+    use super::{extract_url_param, qr_poll_status_summary, QrLoginStartResponse, SessionStatusResponse};
+    use crate::bili::auth::BiliSession;
+    use serde_json::json;
 
     #[test]
     fn extract_params_from_callback_url() {
         let url = "https://passport.bilibili.com/crossDomain?DedeUserID=12345&DedeUserID__ckMd5=abc&SESSDATA=test%2Cdata&bili_jct=ctoken&gourl=https%3A%2F%2Fwww.bilibili.com";
-        assert_eq!(extract_url_param(url, "SESSDATA"), Some("test,data".to_string()));
-        assert_eq!(extract_url_param(url, "bili_jct"), Some("ctoken".to_string()));
-        assert_eq!(extract_url_param(url, "DedeUserID"), Some("12345".to_string()));
+        assert_eq!(
+            extract_url_param(url, "SESSDATA"),
+            Some("test,data".to_string())
+        );
+        assert_eq!(
+            extract_url_param(url, "bili_jct"),
+            Some("ctoken".to_string())
+        );
+        assert_eq!(
+            extract_url_param(url, "DedeUserID"),
+            Some("12345".to_string())
+        );
         assert_eq!(extract_url_param(url, "missing"), None);
+    }
+
+    #[test]
+    fn qr_login_responses_match_frontend_camel_case_contract() {
+        let start = serde_json::to_value(QrLoginStartResponse {
+            url: "https://passport.bilibili.com/qrcode".to_string(),
+            qrcode_key: "qr-key".to_string(),
+        })
+        .unwrap();
+        assert_eq!(start["qrcodeKey"], json!("qr-key"));
+        assert!(start.get("qrcode_key").is_none());
+
+        let status = serde_json::to_value(SessionStatusResponse {
+            logged_in: true,
+            username: Some("name".to_string()),
+            is_premium: false,
+        })
+        .unwrap();
+        assert_eq!(status["loggedIn"], json!(true));
+        assert_eq!(status["isPremium"], json!(false));
+        assert!(status.get("logged_in").is_none());
+        assert!(status.get("is_premium").is_none());
+    }
+
+    #[test]
+    fn qr_login_session_matches_frontend_camel_case_contract() {
+        let session = serde_json::to_value(BiliSession {
+            sessdata: "sess".to_string(),
+            bili_jct: "csrf".to_string(),
+            dede_user_id: "42".to_string(),
+            vip_status: 1,
+        })
+        .unwrap();
+
+        assert_eq!(session["biliJct"], json!("csrf"));
+        assert_eq!(session["dedeUserId"], json!("42"));
+        assert_eq!(session["vipStatus"], json!(1));
+        assert!(session.get("bili_jct").is_none());
+        assert!(session.get("dede_user_id").is_none());
+        assert!(session.get("vip_status").is_none());
+    }
+
+    #[test]
+    fn qr_poll_log_summary_does_not_include_callback_url_or_cookies() {
+        let data = json!({
+            "data": {
+                "code": 0,
+                "message": "0",
+                "url": "https://passport.bilibili.com/crossDomain?SESSDATA=secret&bili_jct=csrf&DedeUserID=42"
+            }
+        });
+
+        let summary = qr_poll_status_summary(&data);
+
+        assert!(summary.contains("code=0"));
+        assert!(summary.contains("message='0'"));
+        assert!(!summary.contains("url"));
+        assert!(!summary.contains("SESSDATA"));
+        assert!(!summary.contains("secret"));
+        assert!(!summary.contains("bili_jct"));
+        assert!(!summary.contains("DedeUserID"));
     }
 }

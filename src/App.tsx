@@ -7,6 +7,7 @@ import { SearchPage } from "@/pages/search-page";
 import { FeedPage } from "@/pages/feed-page";
 import { ChatPage } from "@/pages/chat-page";
 import { SettingsPage } from "@/pages/settings-page";
+import { WorkstationPage } from "@/pages/workstation-page";
 import { ErrorBoundary } from "@/components/error-boundary";
 
 export default function App() {
@@ -66,6 +67,14 @@ export default function App() {
             element={
               <ErrorBoundary>
                 <FeedPage />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/workstation"
+            element={
+              <ErrorBoundary>
+                <WorkstationPage />
               </ErrorBoundary>
             }
           />

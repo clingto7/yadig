@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "yadig — Music Discovery",
+        "title": "yadig - Personal Media Workstation",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

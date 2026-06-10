@@ -22,6 +22,100 @@ export interface ExtractionResult {
   extractionType: "Single" | "MultiPart" | "Chapters" | "Collection";
 }
 
+export type LibraryItemType =
+  | "bili_favorite_video"
+  | "bili_watch_later_video"
+  | "bili_followed_up";
+
+export interface LibraryItem {
+  source: string;
+  externalId: string;
+  itemType: LibraryItemType;
+  title: string;
+  author: string | null;
+  url: string | null;
+  imageUrl: string | null;
+  rawMetadata: Record<string, unknown>;
+}
+
+export interface BiliSyncScope {
+  favorites: boolean;
+  follows: boolean;
+  watchLater: boolean;
+}
+
+export interface BiliSyncResult {
+  items: LibraryItem[];
+  syncedFavorites: boolean;
+  syncedFollows: boolean;
+  syncedWatchLater: boolean;
+}
+
+export interface LlmProviderConfig {
+  provider: string;
+  baseUrl: string | null;
+  apiKey: string | null;
+  model: string;
+}
+
+export interface LlmSuggestedAction {
+  kind: string;
+  target: string | null;
+}
+
+export interface LlmItemAnalysis {
+  externalId: string;
+  suggestedTags: string[];
+  reason: string;
+  confidence: number;
+  suggestedAction: LlmSuggestedAction | null;
+}
+
+export interface LlmAnalysisResponse {
+  items: LlmItemAnalysis[];
+  source: "llm" | "metadata_fallback";
+  warning: string | null;
+}
+
+export interface LlmAnalyzeItemsRequest {
+  instruction: string;
+  items: LibraryItem[];
+  provider: LlmProviderConfig | null;
+}
+
+export interface AudioExtractionCandidate {
+  bvid: string;
+  title: string;
+  isMusic: boolean;
+}
+
+export type OperationPlanKind =
+  | "bili_batch_audio_extraction"
+  | "bili_batch_move"
+  | "bili_batch_delete";
+
+export interface OperationPlanItem {
+  externalId: string;
+  title: string;
+  action: string;
+  target: string | null;
+}
+
+export interface OperationPlan {
+  kind: OperationPlanKind;
+  items: OperationPlanItem[];
+}
+
+export interface BiliAudioExtractionExecutionResult {
+  results: {
+    externalId: string;
+    title: string;
+    status: string;
+    outputPaths: string[];
+    error: string | null;
+  }[];
+}
+
 export const tauri = {
   searchSources: (params: {
     query: string;
@@ -80,6 +174,19 @@ export const tauri = {
 
   biliGetPlayurl: (params: { bvid: string; cid: number }): Promise<{ audioUrl: string; quality: number; bandwidth: number }> =>
     invoke("bili_get_playurl", params),
+
+  // Personal media workstation
+  biliSyncLibrary: (params: { scope: BiliSyncScope }): Promise<BiliSyncResult> =>
+    invoke("bili_sync_library", params),
+
+  llmAnalyzeItems: (request: LlmAnalyzeItemsRequest): Promise<LlmAnalysisResponse> =>
+    invoke("llm_analyze_items", { request }),
+
+  createBiliAudioExtractionPlan: (params: { candidates: AudioExtractionCandidate[] }): Promise<OperationPlan> =>
+    invoke("create_bili_audio_extraction_plan", params),
+
+  executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
+    invoke("execute_bili_audio_extraction_plan", params),
 
   // YouTube
   youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>

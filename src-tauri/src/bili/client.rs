@@ -1,10 +1,11 @@
 use crate::bili::auth::BiliAuth;
+use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
 use crate::bili::ffmpeg;
 use crate::bili::types::*;
-use crate::bili::wbi::{self, WbiKeys};
-use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
 use crate::bili::url::parse_bilibili_url;
+use crate::bili::wbi::{self, WbiKeys};
 use crate::error::{Result, YadigError};
+use crate::library::{BiliResourceKind, BiliSyncResult, BiliSyncScope, LibraryItem};
 use tokio::sync::Mutex;
 
 /// Bilibili API client. Handles HTTP requests, auth cookies, and response parsing.
@@ -25,10 +26,12 @@ impl BiliClient {
 
     /// Build request with auth cookies and referer header.
     fn request(&self, url: &str) -> reqwest::RequestBuilder {
-        let mut req = self.http.get(url)
+        let mut req = self
+            .http
+            .get(url)
             .header("Referer", "https://www.bilibili.com");
         if let Some(session) = self.auth.session() {
-            req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
+            req = req.header("Cookie", session_cookie(&session));
         }
         req
     }
@@ -52,22 +55,197 @@ impl BiliClient {
     }
 
     /// Make a WBI-signed GET request to the given endpoint.
-    async fn signed_get(&self, base_url: &str, params: &[(&str, &str)]) -> Result<reqwest::Response> {
+    async fn signed_get(
+        &self,
+        base_url: &str,
+        params: &[(&str, &str)],
+    ) -> Result<reqwest::Response> {
         let keys = self.ensure_wbi_keys().await?;
         let (w_rid, wts) = wbi::sign_params(params, &keys);
 
-        let query: String = params.iter()
+        let query: String = params
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
         let url = format!("{}?{}&w_rid={}&wts={}", base_url, query, w_rid, wts);
 
-        let mut req = self.http.get(&url)
+        let mut req = self
+            .http
+            .get(&url)
             .header("Referer", "https://www.bilibili.com");
         if let Some(session) = self.auth.session() {
-            req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
+            req = req.header("Cookie", session_cookie(&session));
         }
-        req.send().await.map_err(|e| YadigError::Network(format!("HTTP request failed: {}", e)))
+        req.send()
+            .await
+            .map_err(|e| YadigError::Network(format!("HTTP request failed: {}", e)))
+    }
+
+    async fn get_bili_data(&self, url: &str) -> Result<serde_json::Value> {
+        let resp = self
+            .request(url)
+            .send()
+            .await
+            .map_err(|e| YadigError::Network(format!("Bilibili request failed: {}", e)))?;
+        let body: BiliResponse<serde_json::Value> = resp
+            .json()
+            .await
+            .map_err(|e| YadigError::Network(format!("Bilibili response parse error: {}", e)))?;
+
+        if body.code != 0 {
+            return Err(YadigError::Network(format!(
+                "Bilibili API error ({}): {}",
+                body.code, body.message
+            )));
+        }
+
+        body.data
+            .ok_or_else(|| YadigError::NotFound("Bilibili API returned no data".into()))
+    }
+
+    pub async fn sync_library(&self, scope: BiliSyncScope) -> Result<BiliSyncResult> {
+        let session = self.auth.session().ok_or_else(|| {
+            YadigError::NotFound("Bilibili login is required to sync library".into())
+        })?;
+        let mid = session.dede_user_id.trim();
+        if mid.is_empty() {
+            return Err(YadigError::NotFound(
+                "Bilibili DedeUserID is required; use QR login or full cookie import".into(),
+            ));
+        }
+
+        let mut items = Vec::new();
+        if scope.favorites {
+            items.extend(self.favorite_library_items(mid).await?);
+        }
+        if scope.watch_later {
+            items.extend(self.watch_later_library_items().await?);
+        }
+        if scope.follows {
+            items.extend(self.following_library_items(mid).await?);
+        }
+
+        Ok(BiliSyncResult {
+            items,
+            synced_favorites: scope.favorites,
+            synced_follows: scope.follows,
+            synced_watch_later: scope.watch_later,
+        })
+    }
+
+    async fn favorite_library_items(&self, mid: &str) -> Result<Vec<LibraryItem>> {
+        let url = format!(
+            "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={}",
+            mid
+        );
+        let data = self.get_bili_data(&url).await?;
+        let folders = data
+            .get("list")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut items = Vec::new();
+
+        for folder in folders {
+            let Some(media_id) = folder.get("id").and_then(number_as_string) else {
+                continue;
+            };
+            items.extend(self.favorite_folder_items(&media_id, &folder).await?);
+        }
+
+        Ok(items)
+    }
+
+    async fn favorite_folder_items(
+        &self,
+        media_id: &str,
+        folder: &serde_json::Value,
+    ) -> Result<Vec<LibraryItem>> {
+        let mut items = Vec::new();
+        for pn in 1..=50 {
+            let url = format!(
+                "https://api.bilibili.com/x/v3/fav/resource/list?media_id={}&platform=web&pn={}&ps=20",
+                media_id, pn
+            );
+            let data = self.get_bili_data(&url).await?;
+            let medias = data
+                .get("medias")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for media in medias {
+                if let Some(item) =
+                    normalize_bili_video(BiliResourceKind::FavoriteVideo, media, Some(folder))
+                {
+                    items.push(item);
+                }
+            }
+            if !data
+                .get("has_more")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
+    async fn watch_later_library_items(&self) -> Result<Vec<LibraryItem>> {
+        let data = self
+            .get_bili_data("https://api.bilibili.com/x/v2/history/toview")
+            .await?;
+        let videos = data
+            .get("list")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(videos
+            .into_iter()
+            .filter_map(|video| {
+                normalize_bili_video(BiliResourceKind::WatchLaterVideo, video, None)
+            })
+            .collect())
+    }
+
+    async fn following_library_items(&self, mid: &str) -> Result<Vec<LibraryItem>> {
+        let mut items = Vec::new();
+        for pn in 1..=200 {
+            let url = format!(
+                "https://api.bilibili.com/x/relation/followings?vmid={}&pn={}&ps=50&order_type=",
+                mid, pn
+            );
+            let data = self.get_bili_data(&url).await?;
+            let list = data
+                .get("list")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if list.is_empty() {
+                break;
+            }
+            for up in list {
+                let Some(mid) = up.get("mid").and_then(number_as_string) else {
+                    continue;
+                };
+                let name = up
+                    .get("uname")
+                    .or_else(|| up.get("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Unknown UP")
+                    .to_string();
+                items.push(LibraryItem::from_bili_followed_up(mid, name, up));
+            }
+            let total = data
+                .get("total")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if total > 0 && items.len() as u64 >= total {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     /// Fetch video info by BV号.
@@ -76,21 +254,30 @@ impl BiliClient {
             "https://api.bilibili.com/x/web-interface/view?bvid={}",
             bvid
         );
-        let resp = self.request(&url).send().await
+        let resp = self
+            .request(&url)
+            .send()
+            .await
             .map_err(|e| YadigError::Network(format!("video_info request failed: {}", e)))?;
 
-        let body: BiliResponse<VideoInfo> = resp.json().await
+        let body: BiliResponse<VideoInfo> = resp
+            .json()
+            .await
             .map_err(|e| YadigError::Network(format!("video_info parse error: {}", e)))?;
 
         if body.code != 0 {
-            eprintln!("[video_info] ERROR: code={} message='{}'", body.code, body.message);
+            eprintln!(
+                "[video_info] ERROR: code={} message='{}'",
+                body.code, body.message
+            );
             return Err(YadigError::NotFound(format!(
                 "Bilibili API error ({}): {}",
                 body.code, body.message
             )));
         }
 
-        body.data.ok_or_else(|| YadigError::NotFound("video_info returned no data".into()))
+        body.data
+            .ok_or_else(|| YadigError::NotFound("video_info returned no data".into()))
     }
 
     /// Fetch DASH playurl for a specific video part.
@@ -100,19 +287,26 @@ impl BiliClient {
             "https://api.bilibili.com/x/player/playurl?avid={}&cid={}&fnval=16&fnver=0&fourk=1",
             aid, cid
         );
-        let resp = self.request(&url).send().await
+        let resp = self
+            .request(&url)
+            .send()
+            .await
             .map_err(|e| YadigError::Network(format!("playurl request failed: {}", e)))?;
 
-        let body: BiliResponse<PlayUrlResponse> = resp.json().await
+        let body: BiliResponse<PlayUrlResponse> = resp
+            .json()
+            .await
             .map_err(|e| YadigError::Network(format!("playurl parse error: {}", e)))?;
 
         if body.code != 0 {
             return Err(YadigError::Network(format!(
-                "playurl API error ({}): {}", body.code, body.message
+                "playurl API error ({}): {}",
+                body.code, body.message
             )));
         }
 
-        body.data.ok_or_else(|| YadigError::NotFound("playurl returned no data".into()))
+        body.data
+            .ok_or_else(|| YadigError::NotFound("playurl returned no data".into()))
     }
 
     /// Fetch player info including view_points (chapters) using WBI signing.
@@ -120,26 +314,33 @@ impl BiliClient {
         let aid_str = aid.to_string();
         let cid_str = cid.to_string();
         let params: &[(&str, &str)] = &[("avid", &aid_str), ("cid", &cid_str)];
-        let resp = self.signed_get(
-            "https://api.bilibili.com/x/player/wbi/v2",
-            params,
-        ).await?;
+        let resp = self
+            .signed_get("https://api.bilibili.com/x/player/wbi/v2", params)
+            .await?;
 
-        let body: BiliResponse<PlayerInfo> = resp.json().await
+        let body: BiliResponse<PlayerInfo> = resp
+            .json()
+            .await
             .map_err(|e| YadigError::Network(format!("player_info parse error: {}", e)))?;
 
         if body.code != 0 {
             return Err(YadigError::Network(format!(
-                "player_info API error ({}): {}", body.code, body.message
+                "player_info API error ({}): {}",
+                body.code, body.message
             )));
         }
 
-        body.data.ok_or_else(|| YadigError::NotFound("player_info returned no data".into()))
+        body.data
+            .ok_or_else(|| YadigError::NotFound("player_info returned no data".into()))
     }
 
     /// Download audio from a Bilibili URL and save to local file.
     /// For multi-part videos (分P), extracts all parts unless a specific ?p=N is given.
-    pub async fn extract_audio(&self, url: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    pub async fn extract_audio(
+        &self,
+        url: &str,
+        download_dir: &std::path::Path,
+    ) -> Result<ExtractionResult> {
         let bili_url = parse_bilibili_url(url)?;
 
         match bili_url {
@@ -158,10 +359,15 @@ impl BiliClient {
                 }
             }
             crate::bili::url::BiliUrl::ShortLink { url } => {
-                let resp = self.http.get(&url)
+                let resp = self
+                    .http
+                    .get(&url)
                     .header("Referer", "https://www.bilibili.com")
-                    .send().await
-                    .map_err(|e| YadigError::Network(format!("Short link resolve failed: {}", e)))?;
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        YadigError::Network(format!("Short link resolve failed: {}", e))
+                    })?;
                 let resolved_url = resp.url().to_string();
                 Box::pin(self.extract_audio(&resolved_url, download_dir)).await
             }
@@ -174,23 +380,32 @@ impl BiliClient {
     /// Extract audio for a single page (分P) by its page number.
     /// If the page has chapter markers (view_points) and FFmpeg is available,
     /// splits the audio into individual chapter files. Falls back gracefully.
-    async fn extract_page(&self, info: &VideoInfo, page_num: u32, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    async fn extract_page(
+        &self,
+        info: &VideoInfo,
+        page_num: u32,
+        download_dir: &std::path::Path,
+    ) -> Result<ExtractionResult> {
         let page_idx = page_num.saturating_sub(1) as usize;
-        let page_info = info.pages.get(page_idx)
+        let page_info = info
+            .pages
+            .get(page_idx)
             .ok_or_else(|| YadigError::NotFound(format!("Page {} not found", page_num)))?;
 
         // Try to detect chapters, but fall back gracefully if unavailable
         let player = self.player_info(info.aid, page_info.cid).await.ok();
-        let has_chapters = player.as_ref()
+        let has_chapters = player
+            .as_ref()
             .map(|p| !p.view_points.is_empty())
             .unwrap_or(false);
 
         if has_chapters && ffmpeg::is_available() {
             let player = player.unwrap(); // safe: has_chapters ensures Some
-            // Download full audio to temp, then split by chapters
+                                          // Download full audio to temp, then split by chapters
             let temp = ffmpeg::temp_path(download_dir, &info.title);
             let play_resp = self.playurl(info.aid, page_info.cid).await?;
-            let dash = play_resp.dash
+            let dash = play_resp
+                .dash
                 .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
 
             let has_session = self.auth.session().is_some();
@@ -201,31 +416,40 @@ impl BiliClient {
             self.download_stream(&best.base_url, &temp).await?;
 
             // Build split segments using make_download_filename for safety
-            let segments: Vec<ffmpeg::SplitSegment> = player.view_points.iter().map(|vp| {
-                ffmpeg::SplitSegment {
+            let segments: Vec<ffmpeg::SplitSegment> = player
+                .view_points
+                .iter()
+                .map(|vp| ffmpeg::SplitSegment {
                     start: vp.from,
                     end: vp.to,
-                    output_path: download_dir.join(
-                        make_download_filename(&info.title, Some(&vp.content), "m4a")
-                    )
-                        .to_string_lossy().to_string(),
-                }
-            }).collect();
+                    output_path: download_dir
+                        .join(make_download_filename(
+                            &info.title,
+                            Some(&vp.content),
+                            "m4a",
+                        ))
+                        .to_string_lossy()
+                        .to_string(),
+                })
+                .collect();
 
             let output_paths = ffmpeg::split_audio(&temp, &segments)?;
 
             // Clean up temp file
             let _ = std::fs::remove_file(&temp);
 
-            let audio_segments: Vec<AudioSegment> = player.view_points.iter().zip(output_paths.iter()).map(|(vp, path)| {
-                AudioSegment {
+            let audio_segments: Vec<AudioSegment> = player
+                .view_points
+                .iter()
+                .zip(output_paths.iter())
+                .map(|(vp, path)| AudioSegment {
                     title: vp.content.clone(),
                     file_path: path.clone(),
                     duration: (vp.to - vp.from) as u32,
                     quality: best.id,
                     audio_url: best.base_url.clone(),
-                }
-            }).collect();
+                })
+                .collect();
 
             Ok(ExtractionResult {
                 video_title: info.title.clone(),
@@ -234,20 +458,32 @@ impl BiliClient {
             })
         } else {
             // No chapters or FFmpeg not available — extract as single
-            let segment = self.download_page_audio(info, page_info, download_dir).await?;
+            let segment = self
+                .download_page_audio(info, page_info, download_dir)
+                .await?;
             Ok(ExtractionResult {
                 video_title: info.title.clone(),
                 segments: vec![segment],
-                extraction_type: if info.pages.len() > 1 { ExtractionType::MultiPart } else { ExtractionType::Single },
+                extraction_type: if info.pages.len() > 1 {
+                    ExtractionType::MultiPart
+                } else {
+                    ExtractionType::Single
+                },
             })
         }
     }
 
     /// Extract audio for all pages in a multi-part video.
-    async fn extract_all_pages(&self, info: &VideoInfo, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    async fn extract_all_pages(
+        &self,
+        info: &VideoInfo,
+        download_dir: &std::path::Path,
+    ) -> Result<ExtractionResult> {
         let mut segments = Vec::new();
         for page_info in &info.pages {
-            let segment = self.download_page_audio(info, page_info, download_dir).await?;
+            let segment = self
+                .download_page_audio(info, page_info, download_dir)
+                .await?;
             segments.push(segment);
         }
 
@@ -259,9 +495,15 @@ impl BiliClient {
     }
 
     /// Download audio for a single page and return the segment metadata.
-    async fn download_page_audio(&self, info: &VideoInfo, page_info: &Page, download_dir: &std::path::Path) -> Result<AudioSegment> {
+    async fn download_page_audio(
+        &self,
+        info: &VideoInfo,
+        page_info: &Page,
+        download_dir: &std::path::Path,
+    ) -> Result<AudioSegment> {
         let play_resp = self.playurl(info.aid, page_info.cid).await?;
-        let dash = play_resp.dash
+        let dash = play_resp
+            .dash
             .ok_or_else(|| YadigError::NotFound("No DASH streams available".into()))?;
 
         let has_session = self.auth.session().is_some();
@@ -293,23 +535,34 @@ impl BiliClient {
             "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid={}&season_id={}&page_num=1&page_size=100",
             mid, season_id
         );
-        let resp = self.request(&url).send().await
-            .map_err(|e| YadigError::Network(format!("season_archives request failed: {}", e)))?;
+        let resp =
+            self.request(&url).send().await.map_err(|e| {
+                YadigError::Network(format!("season_archives request failed: {}", e))
+            })?;
 
-        let body: BiliResponse<SeasonArchives> = resp.json().await
+        let body: BiliResponse<SeasonArchives> = resp
+            .json()
+            .await
             .map_err(|e| YadigError::Network(format!("season_archives parse error: {}", e)))?;
 
         if body.code != 0 {
             return Err(YadigError::Network(format!(
-                "season_archives API error ({}): {}", body.code, body.message
+                "season_archives API error ({}): {}",
+                body.code, body.message
             )));
         }
 
-        body.data.ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))
+        body.data
+            .ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))
     }
 
     /// Extract audio from a collection (合集) — enumerates all videos and downloads each.
-    pub async fn extract_collection(&self, mid: i64, season_id: i64, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    pub async fn extract_collection(
+        &self,
+        mid: i64,
+        season_id: i64,
+        download_dir: &std::path::Path,
+    ) -> Result<ExtractionResult> {
         let season = self.season_archives(mid, season_id).await?;
         let safe_title = sanitize_filename(&season.meta.name);
         let collection_dir = download_dir.join(&safe_title);
@@ -318,10 +571,15 @@ impl BiliClient {
         for archive in &season.archives {
             // Fetch video info to get the first page's cid
             let info = self.video_info(&archive.bvid).await?;
-            let page_info = info.pages.first()
+            let page_info = info
+                .pages
+                .first()
                 .ok_or_else(|| YadigError::NotFound(format!("No pages in {}", archive.bvid)))?;
 
-            match self.download_page_audio(&info, page_info, &collection_dir).await {
+            match self
+                .download_page_audio(&info, page_info, &collection_dir)
+                .await
+            {
                 Ok(seg) => segments.push(seg),
                 Err(e) => {
                     // Log error but continue with other videos
@@ -338,12 +596,23 @@ impl BiliClient {
     }
 
     /// Extract audio for a specific segment by cid (for selective extraction).
-    pub async fn extract_segment(&self, bvid: &str, cid: i64, _title: &str, download_dir: &std::path::Path) -> Result<ExtractionResult> {
+    pub async fn extract_segment(
+        &self,
+        bvid: &str,
+        cid: i64,
+        _title: &str,
+        download_dir: &std::path::Path,
+    ) -> Result<ExtractionResult> {
         let info = self.video_info(bvid).await?;
-        let page_info = info.pages.iter().find(|p| p.cid == cid)
+        let page_info = info
+            .pages
+            .iter()
+            .find(|p| p.cid == cid)
             .ok_or_else(|| YadigError::NotFound(format!("Page with cid {} not found", cid)))?;
 
-        let segment = self.download_page_audio(&info, page_info, download_dir).await?;
+        let segment = self
+            .download_page_audio(&info, page_info, download_dir)
+            .await?;
 
         Ok(ExtractionResult {
             video_title: info.title.clone(),
@@ -366,16 +635,24 @@ impl BiliClient {
         let temp_dir = path.parent().unwrap_or(std::path::Path::new("."));
         let temp_path = temp_dir.join(".yadig_dl_tmp");
 
-        let resp = self.http.get(url)
+        let resp = self
+            .http
+            .get(url)
             .header("Referer", "https://www.bilibili.com")
-            .send().await
+            .send()
+            .await
             .map_err(|e| YadigError::Network(format!("Download failed: {}", e)))?;
 
         if !resp.status().is_success() {
-            return Err(YadigError::Network(format!("Download HTTP error: {}", resp.status())));
+            return Err(YadigError::Network(format!(
+                "Download HTTP error: {}",
+                resp.status()
+            )));
         }
 
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| YadigError::Network(format!("Download read error: {}", e)))?;
 
         std::fs::write(&temp_path, &bytes)
@@ -401,7 +678,8 @@ impl BiliClient {
 /// Also truncates to avoid "File name too long" errors on some filesystems.
 /// EXT4 max filename is 255 bytes. We reserve 50 bytes for path prefix and extensions.
 fn sanitize_filename(name: &str) -> String {
-    let mut safe: String = name.chars()
+    let mut safe: String = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c => c,
@@ -441,11 +719,13 @@ fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String 
     if filename.len() > 200 {
         // Truncate from the base title, keeping part and extension
         let max_title_bytes = 200usize.saturating_sub(
-            part.map(|p| sanitize_filename(p).len() + 5).unwrap_or(5) + ext.len() + 1
+            part.map(|p| sanitize_filename(p).len() + 5).unwrap_or(5) + ext.len() + 1,
         );
         let mut truncated_title = String::new();
         for c in safe_title.chars() {
-            if truncated_title.len() + c.len_utf8() > max_title_bytes { break; }
+            if truncated_title.len() + c.len_utf8() > max_title_bytes {
+                break;
+            }
             truncated_title.push(c);
         }
         match part {
@@ -455,6 +735,76 @@ fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String 
     } else {
         filename
     }
+}
+
+fn session_cookie(session: &crate::bili::auth::BiliSession) -> String {
+    let mut parts = vec![format!("SESSDATA={}", session.sessdata)];
+    if !session.bili_jct.is_empty() {
+        parts.push(format!("bili_jct={}", session.bili_jct));
+    }
+    if !session.dede_user_id.is_empty() {
+        parts.push(format!("DedeUserID={}", session.dede_user_id));
+    }
+    parts.join("; ")
+}
+
+fn number_as_string(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .or_else(|| value.as_i64().map(|n| n.to_string()))
+        .or_else(|| value.as_u64().map(|n| n.to_string()))
+}
+
+fn normalize_bili_video(
+    kind: BiliResourceKind,
+    media: serde_json::Value,
+    folder: Option<&serde_json::Value>,
+) -> Option<LibraryItem> {
+    let bvid = media
+        .get("bvid")
+        .or_else(|| media.get("bv_id"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            media
+                .get("uri")
+                .and_then(|value| value.as_str())
+                .and_then(extract_bvid_from_text)
+        })?;
+    let title = media
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Untitled Bilibili video")
+        .to_string();
+    let author = media
+        .get("upper")
+        .and_then(|upper| upper.get("name"))
+        .or_else(|| media.get("author_name"))
+        .or_else(|| media.get("owner").and_then(|owner| owner.get("name")))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let mut raw_metadata = media;
+    if let Some(folder) = folder {
+        raw_metadata["collection"] = serde_json::json!({
+            "id": folder.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            "title": folder.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        });
+    }
+
+    Some(LibraryItem::from_bili_video(
+        kind,
+        bvid,
+        title,
+        author,
+        raw_metadata,
+    ))
+}
+
+fn extract_bvid_from_text(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|part| part.starts_with("BV") && part.len() >= 10)
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]

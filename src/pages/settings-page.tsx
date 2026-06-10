@@ -109,21 +109,54 @@ function SourcesSection({ sources }: { sources?: { id: string; name: string; kin
 function ApiKeysSection() {
   const [discogsKey, setDiscogsKey] = useState("");
   const [discogsSecret, setDiscogsSecret] = useState("");
+  const [llmProvider, setLlmProvider] = useState("openai-compatible");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("https://api.openai.com/v1");
+  const [llmModel, setLlmModel] = useState("gpt-4o-mini");
+  const [llmApiKey, setLlmApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [showLlmKey, setShowLlmKey] = useState(false);
+  const [savedDiscogs, setSavedDiscogs] = useState(false);
+  const [savedLlm, setSavedLlm] = useState(false);
 
-  async function handleSave() {
+  useEffect(() => {
+    (async () => {
+      const store = await Store.load("settings.json");
+      setDiscogsKey((await store.get<string>("discogs_key")) ?? "");
+      setDiscogsSecret((await store.get<string>("discogs_secret")) ?? "");
+      setLlmProvider((await store.get<string>("llm_provider")) ?? "openai-compatible");
+      setLlmBaseUrl((await store.get<string>("llm_base_url")) ?? "https://api.openai.com/v1");
+      setLlmModel((await store.get<string>("llm_model")) ?? "gpt-4o-mini");
+      setLlmApiKey((await store.get<string>("llm_api_key")) ?? "");
+    })().catch((err) => console.error("Failed to load LLM settings:", err));
+  }, []);
+
+  async function handleSaveDiscogs() {
     try {
       const store = await Store.load("settings.json");
       await store.set("discogs_key", discogsKey);
       await store.set("discogs_secret", discogsSecret);
       await store.save();
       await tauri.updateDiscogsKeys({ key: discogsKey, secret: discogsSecret });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setSavedDiscogs(true);
+      setTimeout(() => setSavedDiscogs(false), 2000);
     } catch (err) {
       console.error("Failed to save Discogs keys:", err);
+    }
+  }
+
+  async function handleSaveLlm() {
+    try {
+      const store = await Store.load("settings.json");
+      await store.set("llm_provider", llmProvider);
+      await store.set("llm_base_url", llmBaseUrl);
+      await store.set("llm_model", llmModel);
+      await store.set("llm_api_key", llmApiKey);
+      await store.save();
+      setSavedLlm(true);
+      setTimeout(() => setSavedLlm(false), 2000);
+    } catch (err) {
+      console.error("Failed to save LLM settings:", err);
     }
   }
 
@@ -174,24 +207,67 @@ function ApiKeysSection() {
               </button>
             </div>
             <button
-              onClick={handleSave}
-              disabled={!discogsKey.trim() || !discogsSecret.trim()}
+              onClick={handleSaveDiscogs}
               className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {saved ? "Saved" : "Save"}
+              {savedDiscogs ? "Saved" : "Save Discogs"}
             </button>
           </div>
         </div>
 
         <div className="rounded-lg border border-border bg-card p-4">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-3">
             <Key className="h-4 w-4 text-muted-foreground" />
             <h4 className="font-medium">LLM Integration</h4>
-            <span className="text-xs text-muted-foreground">(Phase 2)</span>
           </div>
-          <p className="text-sm text-muted-foreground">
-            OpenAI / Anthropic / OpenRouter API keys for intelligent search and summarization.
+          <div className="grid gap-2 md:grid-cols-2">
+            <input
+              type="text"
+              value={llmProvider}
+              onChange={(e) => setLlmProvider(e.target.value)}
+              placeholder="Provider"
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <input
+              type="text"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+              placeholder="Model"
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <input
+              type="text"
+              value={llmBaseUrl}
+              onChange={(e) => setLlmBaseUrl(e.target.value)}
+              placeholder="Base URL"
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring md:col-span-2"
+            />
+            <div className="relative md:col-span-2">
+              <input
+                type={showLlmKey ? "text" : "password"}
+                value={llmApiKey}
+                onChange={(e) => setLlmApiKey(e.target.value)}
+                placeholder="API Key"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <button
+                onClick={() => setShowLlmKey(!showLlmKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showLlmKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Used by the media workstation for metadata classification and batch-operation suggestions.
           </p>
+          <button
+            onClick={handleSaveLlm}
+            disabled={!llmProvider.trim() || !llmBaseUrl.trim() || !llmModel.trim()}
+            className="mt-3 h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {savedLlm ? "Saved" : "Save LLM"}
+          </button>
         </div>
       </div>
     </section>
@@ -433,7 +509,7 @@ function BiliLoginSection() {
                   type="text"
                   value={sessdata}
                   onChange={(e) => setSessdata(e.target.value)}
-                  placeholder="Paste SESSDATA cookie value"
+                  placeholder="Paste full Cookie header or SESSDATA value"
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <button
@@ -467,7 +543,7 @@ function AboutSection() {
           </div>
           <div>
             <p className="font-medium">yadig</p>
-            <p className="text-xs text-muted-foreground">v0.1.0 — Music Discovery</p>
+            <p className="text-xs text-muted-foreground">v0.1.0 — Personal Media Workstation</p>
           </div>
         </div>
       </div>

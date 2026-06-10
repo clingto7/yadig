@@ -3,24 +3,26 @@ mod commands;
 mod config;
 mod error;
 mod http_client;
+mod library;
+mod llm;
 mod source;
 mod youtube;
 
 use bili::auth::BiliAuth;
 use config::DiscogsKeys;
-use source::registry::SourceRegistry;
-use youtube::YoutubeClient;
-use source::rss::pitchfork::PitchforkSource;
-use source::rss::feeds::{StereogumSource, FaderSource};
 use source::api::bilibili::BiliSource;
 use source::api::discogs::DiscogsSource;
 use source::api::jamendo::JamendoSource;
 use source::api::lastfm::LastFmSource;
 use source::api::musicbrainz::MusicBrainzSource;
 use source::api::youtube::YouTubeSource;
-use source::scraper::bandcamp::BandcampSource;
+use source::registry::SourceRegistry;
+use source::rss::feeds::{FaderSource, StereogumSource};
+use source::rss::pitchfork::PitchforkSource;
 use source::scraper::albumoftheyear::AlbumOfTheYearSource;
+use source::scraper::bandcamp::BandcampSource;
 use tauri_plugin_sql::{Migration, MigrationKind};
+use youtube::YoutubeClient;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,6 +43,12 @@ pub fn run() {
             version: 3,
             description: "create_rss_feeds",
             sql: include_str!("../migrations/003_rss_feeds.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "create_library_tables",
+            sql: include_str!("../migrations/004_library_tables.sql"),
             kind: MigrationKind::Up,
         },
     ];
@@ -99,10 +107,119 @@ pub fn run() {
             commands::bilibili::bili_extract_collection,
             commands::bilibili::bili_check_ffmpeg,
             commands::bilibili::bili_get_playurl,
+            commands::library::bili_sync_library,
+            commands::library::llm_analyze_items,
+            commands::library::create_bili_audio_extraction_plan,
+            commands::library::execute_bili_audio_extraction_plan,
             commands::youtube::youtube_extract_audio,
             commands::youtube::youtube_search,
             commands::youtube::youtube_check_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");
+}
+
+#[cfg(test)]
+mod media_workstation_tests {
+    use crate::bili::auth::BiliSession;
+    use crate::bili::session::parse_cookie_session;
+    use crate::library::{
+        AudioExtractionCandidate, BiliResourceKind, LibraryItem, LibraryItemType, OperationPlan,
+        OperationPlanKind,
+    };
+    use crate::llm::{parse_llm_analysis, LlmSuggestedAction};
+
+    #[test]
+    fn parses_full_bilibili_cookie_for_write_operations() {
+        let session = parse_cookie_session(
+            "buvid3=abc; SESSDATA=sess; bili_jct=csrf-token; DedeUserID=12345;",
+        )
+        .expect("full cookie should parse");
+
+        assert_eq!(
+            session,
+            BiliSession {
+                sessdata: "sess".to_string(),
+                bili_jct: "csrf-token".to_string(),
+                dede_user_id: "12345".to_string(),
+                vip_status: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn normalizes_bili_video_metadata_into_library_item() {
+        let item = LibraryItem::from_bili_video(
+            BiliResourceKind::FavoriteVideo,
+            "BV1abc".to_string(),
+            "城市流行采样合集".to_string(),
+            Some("音乐UP".to_string()),
+            serde_json::json!({
+                "tid": 3,
+                "tname": "音乐",
+                "play": 12000,
+                "fav_time": 1781070000
+            }),
+        );
+
+        assert_eq!(item.source, "bilibili");
+        assert_eq!(item.external_id, "BV1abc");
+        assert_eq!(item.item_type, LibraryItemType::BiliFavoriteVideo);
+        assert_eq!(item.title, "城市流行采样合集");
+        assert_eq!(item.author.as_deref(), Some("音乐UP"));
+        assert_eq!(item.raw_metadata["tname"].as_str(), Some("音乐"));
+    }
+
+    #[test]
+    fn parses_structured_llm_suggestions() {
+        let response = r#"{
+          "items": [
+            {
+              "external_id": "BV1abc",
+              "suggested_tags": ["音乐", "采样"],
+              "reason": "标题和分区都指向音乐内容",
+              "confidence": 0.91,
+              "suggested_action": {
+                "kind": "extract_audio",
+                "target": "music-audio"
+              }
+            }
+          ]
+        }"#;
+
+        let parsed = parse_llm_analysis(response).expect("valid structured response");
+        assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].external_id, "BV1abc");
+        assert_eq!(parsed.items[0].suggested_tags, vec!["音乐", "采样"]);
+        assert_eq!(
+            parsed.items[0].suggested_action,
+            Some(LlmSuggestedAction {
+                kind: "extract_audio".to_string(),
+                target: Some("music-audio".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn builds_audio_extraction_operation_plan_for_music_videos() {
+        let candidates = vec![
+            AudioExtractionCandidate {
+                bvid: "BV1music".to_string(),
+                title: "现场音乐".to_string(),
+                is_music: true,
+            },
+            AudioExtractionCandidate {
+                bvid: "BV1game".to_string(),
+                title: "游戏攻略".to_string(),
+                is_music: false,
+            },
+        ];
+
+        let plan = OperationPlan::for_bili_audio_extraction(candidates);
+
+        assert_eq!(plan.kind, OperationPlanKind::BiliBatchAudioExtraction);
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].external_id, "BV1music");
+        assert_eq!(plan.items[0].action, "extract_audio");
+    }
 }

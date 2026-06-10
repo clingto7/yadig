@@ -1,4 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
+import type { BiliSyncScope, LibraryItem, LlmItemAnalysis, LlmProviderConfig, OperationPlan } from "@/lib/tauri";
 
 let db: Database | null = null;
 
@@ -136,4 +137,217 @@ export async function listSearches(limit = 20): Promise<SearchHistoryEntry[]> {
 export async function clearHistory(): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM search_history", []);
+}
+
+// --- Personal Media Library ---
+
+type LibraryItemRow = {
+  source: string;
+  external_id: string;
+  item_type: LibraryItem["itemType"];
+  title: string;
+  author: string | null;
+  url: string | null;
+  image_url: string | null;
+  raw_metadata: string;
+};
+
+function parseRawMetadata(rawMetadata: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(rawMetadata);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function mapLibraryItem(row: LibraryItemRow): LibraryItem {
+  return {
+    source: row.source,
+    externalId: row.external_id,
+    itemType: row.item_type,
+    title: row.title,
+    author: row.author,
+    url: row.url,
+    imageUrl: row.image_url,
+    rawMetadata: parseRawMetadata(row.raw_metadata),
+  };
+}
+
+export async function upsertLibraryItems(items: LibraryItem[], syncedScope?: BiliSyncScope): Promise<void> {
+  const d = await getDb();
+  for (const item of items) {
+    await d.execute(
+      `INSERT INTO library_items
+        (source, external_id, item_type, title, author, url, image_url, raw_metadata, last_synced_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, datetime('now'), datetime('now'))
+       ON CONFLICT(source, external_id, item_type) DO UPDATE SET
+        title = excluded.title,
+        author = excluded.author,
+        url = excluded.url,
+        image_url = excluded.image_url,
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [
+        item.source,
+        item.externalId,
+        item.itemType,
+        item.title,
+        item.author,
+        item.url,
+        item.imageUrl,
+        JSON.stringify(item.rawMetadata ?? {}),
+      ]
+    );
+  }
+
+  if (!syncedScope) return;
+
+  const syncedTypes: LibraryItem["itemType"][] = [];
+  if (syncedScope.favorites) syncedTypes.push("bili_favorite_video");
+  if (syncedScope.watchLater) syncedTypes.push("bili_watch_later_video");
+  if (syncedScope.follows) syncedTypes.push("bili_followed_up");
+
+  for (const itemType of syncedTypes) {
+    const currentIds = items
+      .filter((item) => item.source === "bilibili" && item.itemType === itemType)
+      .map((item) => item.externalId);
+
+    if (currentIds.length === 0) {
+      await d.execute(
+        "DELETE FROM library_items WHERE source = 'bilibili' AND item_type = $1",
+        [itemType]
+      );
+      continue;
+    }
+
+    const placeholders = currentIds.map((_, index) => `$${index + 2}`).join(", ");
+    await d.execute(
+      `DELETE FROM library_items
+       WHERE source = 'bilibili'
+         AND item_type = $1
+         AND external_id NOT IN (${placeholders})`,
+      [itemType, ...currentIds]
+    );
+  }
+}
+
+export async function listLibraryItems(): Promise<LibraryItem[]> {
+  const d = await getDb();
+  const rows = await d.select<LibraryItemRow[]>(
+    `SELECT source, external_id, item_type, title, author, url, image_url, raw_metadata
+     FROM library_items
+     ORDER BY last_synced_at DESC, updated_at DESC`,
+    []
+  );
+  return rows.map(mapLibraryItem);
+}
+
+export async function listLatestLlmAnalyses(): Promise<LlmItemAnalysis[]> {
+  const d = await getDb();
+  const rows = await d.select<{ response_json: string }[]>(
+    `SELECT la.response_json
+     FROM llm_analyses la
+     INNER JOIN (
+       SELECT item_id, MAX(id) AS latest_id
+       FROM llm_analyses
+       GROUP BY item_id
+     ) latest ON latest.latest_id = la.id
+     ORDER BY la.created_at DESC`,
+    []
+  );
+
+  return rows.flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.response_json) as LlmItemAnalysis;
+      return parsed.externalId ? [parsed] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export async function saveLlmAnalysis(
+  instruction: string,
+  provider: LlmProviderConfig | null,
+  items: LibraryItem[],
+  analyses: LlmItemAnalysis[]
+): Promise<void> {
+  if (analyses.length === 0) return;
+
+  const d = await getDb();
+  for (const analysis of analyses) {
+    const matchingItems = items.filter((candidate) => candidate.externalId === analysis.externalId);
+    if (matchingItems.length === 0) {
+      continue;
+    }
+
+    for (const item of matchingItems) {
+      const rows = await d.select<{ id: number }[]>(
+        `SELECT id FROM library_items
+         WHERE source = $1 AND external_id = $2 AND item_type = $3
+         LIMIT 1`,
+        [item.source, item.externalId, item.itemType]
+      );
+      const itemId = rows[0]?.id;
+      if (!itemId) continue;
+
+      await d.execute(
+        `INSERT INTO llm_analyses (item_id, provider, model, instruction, response_json)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          itemId,
+          provider?.provider ?? "metadata-fallback",
+          provider?.model ?? "metadata-fallback",
+          instruction,
+          JSON.stringify(analysis),
+        ]
+      );
+
+      for (const tag of analysis.suggestedTags) {
+        const trimmed = tag.trim();
+        if (!trimmed) continue;
+
+        await d.execute(
+          "INSERT OR IGNORE INTO library_tags (name, source) VALUES ($1, 'llm')",
+          [trimmed]
+        );
+        const tagRows = await d.select<{ id: number }[]>(
+          "SELECT id FROM library_tags WHERE name = $1 LIMIT 1",
+          [trimmed]
+        );
+        const tagId = tagRows[0]?.id;
+        if (!tagId) continue;
+
+        await d.execute(
+          `INSERT INTO library_item_tags (item_id, tag_id, confidence, reason)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT(item_id, tag_id) DO UPDATE SET
+            confidence = excluded.confidence,
+            reason = excluded.reason`,
+          [itemId, tagId, analysis.confidence, analysis.reason]
+        );
+      }
+    }
+  }
+}
+
+export async function saveOperationPlan(plan: OperationPlan): Promise<void> {
+  const d = await getDb();
+  const result = await d.execute("INSERT INTO operation_plans (kind, status) VALUES ($1, 'draft')", [
+    plan.kind,
+  ]);
+  const planId = result.lastInsertId;
+  if (!planId) return;
+
+  for (const item of plan.items) {
+    await d.execute(
+      `INSERT INTO operation_plan_items (plan_id, external_id, title, action, target)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [planId, item.externalId, item.title, item.action, item.target]
+    );
+  }
 }

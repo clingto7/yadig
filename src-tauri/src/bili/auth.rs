@@ -3,12 +3,15 @@ use std::sync::{Arc, RwLock};
 
 /// Bilibili session data obtained from login.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BiliSession {
     pub sessdata: String,
+    #[serde(alias = "bili_jct")]
     pub bili_jct: String,
+    #[serde(alias = "dede_user_id")]
     pub dede_user_id: String,
     /// 1 = VIP (大会员), 0 = standard
-    #[serde(default)]
+    #[serde(default, alias = "vip_status")]
     pub vip_status: i32,
 }
 
@@ -212,6 +215,23 @@ mod tests {
         };
         let json = serde_json::to_string(&session).unwrap();
         let deserialized: BiliSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.sessdata, "test_sd");
+        assert_eq!(deserialized.bili_jct, "test_ct");
+        assert_eq!(deserialized.dede_user_id, "999");
+        assert_eq!(deserialized.vip_status, 1);
+    }
+
+    #[test]
+    fn deserializes_legacy_snake_case_session_json() {
+        let raw = r#"{
+            "sessdata": "test_sd",
+            "bili_jct": "test_ct",
+            "dede_user_id": "999",
+            "vip_status": 1
+        }"#;
+
+        let deserialized: BiliSession = serde_json::from_str(raw).unwrap();
+
         assert_eq!(deserialized.sessdata, "test_sd");
         assert_eq!(deserialized.bili_jct, "test_ct");
         assert_eq!(deserialized.dede_user_id, "999");
