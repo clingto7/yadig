@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Source, ContentItem, SearchResult } from "@/types/source";
+import type { Source, ContentItem, SearchResult, YoutubeExtractionResult } from "@/types/source";
 
 export interface BiliSession {
   sessdata: string;
@@ -80,4 +80,14 @@ export const tauri = {
 
   biliGetPlayurl: (params: { bvid: string; cid: number }): Promise<{ audioUrl: string; quality: number; bandwidth: number }> =>
     invoke("bili_get_playurl", params),
+
+  // YouTube
+  youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>
+    invoke("youtube_extract_audio", params),
+
+  youtubeSearch: (params: { query: string; limit?: number }): Promise<ContentItem[]> =>
+    invoke("youtube_search", params),
+
+  youtubeCheckReady: (): Promise<boolean> =>
+    invoke("youtube_check_ready"),
 };

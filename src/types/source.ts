@@ -36,3 +36,21 @@ export interface SearchResult {
   elapsedMs: number;
   page: SearchPage;
 }
+
+// YouTube extraction types
+export interface YoutubeAudioSegment {
+  title: string;
+  filePath: string;
+  duration: number;
+  audioUrl: string;
+  ext: string;
+}
+
+export interface YoutubeExtractionResult {
+  videoTitle: string;
+  videoUrl: string;
+  thumbnailUrl: string | null;
+  duration: number;
+  segments: YoutubeAudioSegment[];
+  hasChapters: boolean;
+}

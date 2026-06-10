@@ -4,15 +4,20 @@ mod config;
 mod error;
 mod http_client;
 mod source;
+mod youtube;
 
 use bili::auth::BiliAuth;
 use config::DiscogsKeys;
 use source::registry::SourceRegistry;
+use youtube::YoutubeClient;
 use source::rss::pitchfork::PitchforkSource;
 use source::rss::feeds::{StereogumSource, FaderSource};
 use source::api::bilibili::BiliSource;
 use source::api::discogs::DiscogsSource;
 use source::api::jamendo::JamendoSource;
+use source::api::lastfm::LastFmSource;
+use source::api::musicbrainz::MusicBrainzSource;
+use source::api::youtube::YouTubeSource;
 use source::scraper::bandcamp::BandcampSource;
 use source::scraper::albumoftheyear::AlbumOfTheYearSource;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -44,6 +49,12 @@ pub fn run() {
     let discogs_keys = DiscogsKeys::new();
     let bili_auth = BiliAuth::new();
 
+    // YouTube client — uses external yt-dlp CLI, output in Downloads/yadig
+    let output_dir = dirs_next::download_dir()
+        .map(|d| d.join("yadig"))
+        .unwrap_or_else(|| std::path::PathBuf::from("yadig-output"));
+    let youtube_client = YoutubeClient::new(output_dir);
+
     // Register built-in sources
     registry.register(Box::new(PitchforkSource::new()));
     registry.register(Box::new(DiscogsSource::new(discogs_keys.clone())));
@@ -53,6 +64,9 @@ pub fn run() {
     registry.register(Box::new(StereogumSource::new()));
     registry.register(Box::new(FaderSource::new()));
     registry.register(Box::new(BiliSource::new(bili_auth.clone())));
+    registry.register(Box::new(MusicBrainzSource::new()));
+    registry.register(Box::new(LastFmSource::new()));
+    registry.register(Box::new(YouTubeSource::new()));
 
     tauri::Builder::default()
         .plugin(
@@ -65,6 +79,7 @@ pub fn run() {
         .manage(registry)
         .manage(discogs_keys)
         .manage(bili_auth)
+        .manage(youtube_client)
         .invoke_handler(tauri::generate_handler![
             commands::search::search_sources,
             commands::search::fetch_latest,
@@ -84,6 +99,9 @@ pub fn run() {
             commands::bilibili::bili_extract_collection,
             commands::bilibili::bili_check_ffmpeg,
             commands::bilibili::bili_get_playurl,
+            commands::youtube::youtube_extract_audio,
+            commands::youtube::youtube_search,
+            commands::youtube::youtube_check_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yadig");
