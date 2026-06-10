@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
-import { Brain, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
+import { Brain, Clock3, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
   tauri,
   type FavoriteOperationAction,
@@ -8,9 +8,11 @@ import {
   type LibraryItem,
   type LlmItemAnalysis,
   type OperationPlan,
+  type OperationPlanItemStatus,
 } from "@/lib/tauri";
 import {
   listFavoriteOperationCandidates,
+  listBiliFavoriteOperationPlanHistory,
   listLatestLlmAnalyses,
   listLibraryCollections,
   listLibraryItemsWithCollections,
@@ -20,9 +22,26 @@ import {
   updateBiliFavoriteMoveMemberships,
   upsertBiliSyncResult,
   type LibraryItemWithCollections,
+  type OperationPlanHistoryEntry,
+  type OperationPlanHistoryItem,
 } from "@/lib/db";
+import {
+  classifyOperationIssue,
+  operationIssueLabel,
+  operationPlanHistoryStatusLabel,
+  operationPlanItemStatusLabel,
+  sanitizeOperationError,
+} from "@/lib/operation-plan-history";
 
 type ResourceFilter = "all" | LibraryItem["itemType"];
+const OPERATION_ITEM_STATUSES: OperationPlanItemStatus[] = [
+  "pending",
+  "running",
+  "success",
+  "skipped",
+  "failed",
+  "blocked",
+];
 
 function itemTypeLabel(type: LibraryItem["itemType"]) {
   switch (type) {
@@ -42,6 +61,38 @@ function isMusicSuggestion(analysis?: LlmItemAnalysis) {
   );
 }
 
+function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
+  switch (kind) {
+    case "bili_batch_move":
+      return "Move";
+    case "bili_batch_delete":
+      return "Delete";
+  }
+}
+
+function operationActionLabel(action: string) {
+  switch (action) {
+    case "move":
+    case "move_favorite":
+      return "Move";
+    case "delete":
+    case "delete_favorite":
+      return "Delete";
+    default:
+      return action;
+  }
+}
+
+function formatHistoryTime(value: string) {
+  const date = new Date(value.replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function safeErrorMessage(prefix: string, err: unknown) {
+  return `${prefix}: ${sanitizeOperationError(String(err)) ?? "Unknown error"}`;
+}
+
 export function WorkstationPage() {
   const [items, setItems] = useState<LibraryItemWithCollections[]>([]);
   const [favoriteFolders, setFavoriteFolders] = useState<LibraryCollection[]>([]);
@@ -51,6 +102,8 @@ export function WorkstationPage() {
   const [targetFolderId, setTargetFolderId] = useState<string>("");
   const [analyses, setAnalyses] = useState<LlmItemAnalysis[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
+  const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
+  const [selectedHistoryPlanId, setSelectedHistoryPlanId] = useState<number | null>(null);
   const [instruction, setInstruction] = useState("请按领域给这些 B 站资源分类，并标出适合批量提取音频的音乐类视频。");
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -103,6 +156,22 @@ export function WorkstationPage() {
     return counts;
   }, [plan]);
 
+  const selectedHistoryPlan = useMemo(() => {
+    if (selectedHistoryPlanId === null) return operationHistory[0] ?? null;
+    return operationHistory.find((entry) => entry.id === selectedHistoryPlanId) ?? operationHistory[0] ?? null;
+  }, [operationHistory, selectedHistoryPlanId]);
+
+  async function refreshOperationHistory(preferredPlanId?: number | null) {
+    const history = await listBiliFavoriteOperationPlanHistory(20);
+    setOperationHistory(history);
+    setSelectedHistoryPlanId((current) => {
+      if (history.length === 0) return null;
+      if (preferredPlanId && history.some((entry) => entry.id === preferredPlanId)) return preferredPlanId;
+      if (current && history.some((entry) => entry.id === current)) return current;
+      return history[0].id;
+    });
+  }
+
   useEffect(() => {
     if (resourceFilter !== "bili_favorite_video" && selectedFolderId !== "all") {
       setSelectedFolderId("all");
@@ -124,17 +193,20 @@ export function WorkstationPage() {
       listLibraryItemsWithCollections(),
       listLibraryCollections("bili_favorite_folder"),
       listLatestLlmAnalyses(),
+      listBiliFavoriteOperationPlanHistory(20),
     ])
-      .then(([storedItems, storedFolders, storedAnalyses]) => {
+      .then(([storedItems, storedFolders, storedAnalyses, storedHistory]) => {
         if (!cancelled) {
           setItems(storedItems);
           setFavoriteFolders(storedFolders);
           setAnalyses(storedAnalyses);
+          setOperationHistory(storedHistory);
+          setSelectedHistoryPlanId(storedHistory[0]?.id ?? null);
         }
       })
       .catch((err) => {
         if (!cancelled) {
-          setMessage(`Could not load local library: ${err}`);
+          setMessage(safeErrorMessage("Could not load local library", err));
         }
       });
 
@@ -170,7 +242,7 @@ export function WorkstationPage() {
       setAnalyses([]);
       setMessage(`Synced and saved ${result.items.length} Bilibili resources.`);
     } catch (err) {
-      setMessage(`Sync failed: ${err}`);
+      setMessage(safeErrorMessage("Sync failed", err));
     } finally {
       setBusy(null);
     }
@@ -201,7 +273,7 @@ export function WorkstationPage() {
           : `Analyzed ${result.items.length} resources with LLM and saved suggested tags.`
       );
     } catch (err) {
-      setMessage(`Analysis failed: ${err}`);
+      setMessage(safeErrorMessage("Analysis failed", err));
     } finally {
       setBusy(null);
     }
@@ -223,7 +295,7 @@ export function WorkstationPage() {
       setPlan(nextPlan);
       setMessage(`Created audio extraction plan with ${nextPlan.items.length} music videos.`);
     } catch (err) {
-      setMessage(`Plan creation failed: ${err}`);
+      setMessage(safeErrorMessage("Plan creation failed", err));
     } finally {
       setBusy(null);
     }
@@ -274,12 +346,13 @@ export function WorkstationPage() {
         targetCollectionTitle: action === "move" ? targetFolder?.title ?? null : null,
         items: candidates,
       });
-      await saveOperationPlan(nextPlan);
+      const savedPlanId = await saveOperationPlan(nextPlan);
+      await refreshOperationHistory(savedPlanId);
       setPlan(nextPlan);
       const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
       setMessage(`Created ${action} draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
     } catch (err) {
-      setMessage(`Favorite plan creation failed: ${err}`);
+      setMessage(safeErrorMessage("Favorite plan creation failed", err));
     } finally {
       setBusy(null);
     }
@@ -299,7 +372,7 @@ export function WorkstationPage() {
       const successCount = result.results.filter((item) => item.status === "success").length;
       setMessage(`Extracted audio for ${successCount}/${result.results.length} videos.`);
     } catch (err) {
-      setMessage(`Audio extraction failed: ${err}`);
+      setMessage(safeErrorMessage("Audio extraction failed", err));
     } finally {
       setBusy(null);
     }
@@ -322,7 +395,8 @@ export function WorkstationPage() {
     try {
       const result = await tauri.executeBiliFavoriteMovePlan({ plan, confirmed: true });
       await updateBiliFavoriteMoveMemberships(result.plan);
-      await saveOperationPlan(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
       const [storedItems, storedFolders] = await Promise.all([
         listLibraryItemsWithCollections(),
         listLibraryCollections("bili_favorite_folder"),
@@ -338,7 +412,7 @@ export function WorkstationPage() {
           : `Moved ${successCount}/${result.plan.items.length} favorite items.`
       );
     } catch (err) {
-      setMessage(`Favorite move execution failed: ${err}`);
+      setMessage(safeErrorMessage("Favorite move execution failed", err));
     } finally {
       setBusy(null);
     }
@@ -364,7 +438,8 @@ export function WorkstationPage() {
     try {
       const result = await tauri.executeBiliFavoriteDeletePlan({ plan, confirmationText });
       await updateBiliFavoriteDeleteMemberships(result.plan);
-      await saveOperationPlan(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
       const [storedItems, storedFolders] = await Promise.all([
         listLibraryItemsWithCollections(),
         listLibraryCollections("bili_favorite_folder"),
@@ -380,7 +455,7 @@ export function WorkstationPage() {
           : `Deleted ${successCount}/${result.plan.items.length} favorite items.`
       );
     } catch (err) {
-      setMessage(`Favorite delete execution failed: ${err}`);
+      setMessage(safeErrorMessage("Favorite delete execution failed", err));
     } finally {
       setBusy(null);
     }
@@ -505,13 +580,101 @@ export function WorkstationPage() {
               </div>
             </div>
 
+            <div className="rounded-lg border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-semibold">Favorite Operation History</h3>
+                <button
+                  onClick={() => void refreshOperationHistory()}
+                  disabled={busy !== null}
+                  className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-xs hover:bg-secondary disabled:opacity-50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Refresh
+                </button>
+              </div>
+
+              {operationHistory.length === 0 ? (
+                <div className="mt-3 rounded border border-dashed border-border p-3 text-sm text-muted-foreground">
+                  No favorite operation plans yet.
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <div className="space-y-2">
+                    {operationHistory.map((entry) => {
+                      const selected = selectedHistoryPlan?.id === entry.id;
+                      return (
+                        <button
+                          key={entry.id}
+                          onClick={() => setSelectedHistoryPlanId(entry.id)}
+                          className={`w-full rounded border p-3 text-left text-sm transition-colors hover:bg-secondary ${
+                            selected ? "border-primary bg-primary/5" : "border-border"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium">{favoritePlanKindLabel(entry.kind)}</span>
+                            <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
+                              {operationPlanHistoryStatusLabel(entry.status)}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              <Clock3 className="h-3 w-3" />
+                              {formatHistoryTime(entry.createdAt)}
+                            </span>
+                            <span>{entry.itemCount} item{entry.itemCount === 1 ? "" : "s"}</span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                            {OPERATION_ITEM_STATUSES.filter((status) => entry.statusCounts[status] > 0).map((status) => (
+                              <span key={status} className="rounded bg-secondary px-2 py-0.5">
+                                {operationPlanItemStatusLabel(status)} {entry.statusCounts[status]}
+                              </span>
+                            ))}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedHistoryPlan && (
+                    <div className="max-h-80 space-y-2 overflow-y-auto rounded border border-border p-2">
+                      {selectedHistoryPlan.items.map((item: OperationPlanHistoryItem) => {
+                        const issueKind = classifyOperationIssue(item);
+                        const safeError = sanitizeOperationError(item.error);
+                        return (
+                          <div key={item.id} className="rounded border border-border p-2 text-sm">
+                            <div className="font-medium">{item.title}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {operationActionLabel(item.action)}
+                              {" · "}
+                              {item.sourceCollectionTitle ?? "Unknown source"}
+                              {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
+                              {" · "}
+                              {operationPlanItemStatusLabel(item.status)}
+                            </div>
+                            {issueKind !== "none" && (
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {operationIssueLabel(issueKind)}
+                              </div>
+                            )}
+                            {safeError && (
+                              <div className="mt-1 text-xs text-destructive">{safeError}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {plan && plan.kind !== "bili_batch_audio_extraction" && (
               <div className="rounded-lg border border-border bg-card p-4">
                 <h3 className="font-semibold">Plan Preview</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  {["pending", "success", "skipped", "blocked", "failed"].map((status) => (
+                  {OPERATION_ITEM_STATUSES.map((status) => (
                     <span key={status} className="rounded bg-secondary px-2 py-0.5">
-                      {status} {planStatusCounts.get(status) ?? 0}
+                      {operationPlanItemStatusLabel(status)} {planStatusCounts.get(status) ?? 0}
                     </span>
                   ))}
                 </div>
@@ -523,10 +686,10 @@ export function WorkstationPage() {
                         {item.sourceCollectionTitle ?? "Unknown source"}
                         {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
                         {" · "}
-                        {item.status}
+                        {operationPlanItemStatusLabel(item.status)}
                       </div>
                       {item.error && (
-                        <div className="mt-1 text-xs text-destructive">{item.error}</div>
+                        <div className="mt-1 text-xs text-destructive">{sanitizeOperationError(item.error)}</div>
                       )}
                     </div>
                   ))}

@@ -9,7 +9,15 @@ import type {
   LlmItemAnalysis,
   LlmProviderConfig,
   OperationPlan,
+  OperationPlanItem,
+  OperationPlanItemStatus,
 } from "@/lib/tauri";
+import {
+  deriveOperationPlanStatus,
+  normalizeOperationPlanItemStatus,
+  sanitizeOperationError,
+  type OperationPlanHistoryStatus,
+} from "@/lib/operation-plan-history";
 
 let db: Database | null = null;
 
@@ -179,6 +187,56 @@ type FavoriteOperationCandidateRow = {
   raw_metadata: string;
 };
 
+type OperationPlanRow = {
+  id: number;
+  kind: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type OperationPlanItemRow = {
+  id: number;
+  plan_id: number;
+  external_id: string;
+  title: string;
+  action: string;
+  target: string | null;
+  status: string;
+  error: string | null;
+  source_collection_external_id: string | null;
+  source_collection_title: string | null;
+  target_collection_external_id: string | null;
+  target_collection_title: string | null;
+  resource_id: string | null;
+  resource_type: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BiliFavoriteOperationPlanKind = Extract<
+  OperationPlan["kind"],
+  "bili_batch_move" | "bili_batch_delete"
+>;
+
+export type OperationPlanHistoryItem = OperationPlanItem & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OperationPlanHistoryEntry = {
+  id: number;
+  kind: BiliFavoriteOperationPlanKind;
+  status: OperationPlanHistoryStatus;
+  storedStatus: string;
+  createdAt: string;
+  updatedAt: string;
+  itemCount: number;
+  statusCounts: Record<OperationPlanItemStatus, number>;
+  items: OperationPlanHistoryItem[];
+};
+
 function parseRawMetadata(rawMetadata: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(rawMetadata);
@@ -218,6 +276,60 @@ function rawMetadataString(metadata: Record<string, unknown>, key: string): stri
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   return null;
+}
+
+function emptyOperationStatusCounts(): Record<OperationPlanItemStatus, number> {
+  return {
+    pending: 0,
+    running: 0,
+    success: 0,
+    skipped: 0,
+    failed: 0,
+    blocked: 0,
+  };
+}
+
+function mapOperationPlanItemRow(row: OperationPlanItemRow): OperationPlanHistoryItem {
+  const status = normalizeOperationPlanItemStatus(row.status);
+  return {
+    id: row.id,
+    externalId: row.external_id,
+    title: row.title,
+    action: row.action,
+    target: row.target,
+    status,
+    error: sanitizeOperationError(row.error),
+    sourceCollectionExternalId: row.source_collection_external_id,
+    sourceCollectionTitle: row.source_collection_title,
+    targetCollectionExternalId: row.target_collection_external_id,
+    targetCollectionTitle: row.target_collection_title,
+    resourceId: row.resource_id,
+    resourceType: row.resource_type,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function buildOperationPlanHistoryEntry(
+  row: OperationPlanRow,
+  items: OperationPlanHistoryItem[]
+): OperationPlanHistoryEntry {
+  const statusCounts = emptyOperationStatusCounts();
+  for (const item of items) {
+    statusCounts[item.status] += 1;
+  }
+
+  return {
+    id: row.id,
+    kind: row.kind as BiliFavoriteOperationPlanKind,
+    status: deriveOperationPlanStatus(items),
+    storedStatus: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    itemCount: items.length,
+    statusCounts,
+    items,
+  };
 }
 
 export type LibraryItemWithCollections = LibraryItem & {
@@ -605,13 +717,15 @@ export async function saveLlmAnalysis(
   }
 }
 
-export async function saveOperationPlan(plan: OperationPlan): Promise<void> {
+export async function saveOperationPlan(plan: OperationPlan): Promise<number | null> {
   const d = await getDb();
-  const result = await d.execute("INSERT INTO operation_plans (kind, status) VALUES ($1, 'draft')", [
+  const status = deriveOperationPlanStatus(plan.items);
+  const result = await d.execute("INSERT INTO operation_plans (kind, status) VALUES ($1, $2)", [
     plan.kind,
+    status,
   ]);
   const planId = result.lastInsertId;
-  if (!planId) return;
+  if (!planId) return null;
 
   for (const item of plan.items) {
     await d.execute(
@@ -638,6 +752,43 @@ export async function saveOperationPlan(plan: OperationPlan): Promise<void> {
       ]
     );
   }
+
+  return planId;
+}
+
+export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<OperationPlanHistoryEntry[]> {
+  const d = await getDb();
+  const planRows = await d.select<OperationPlanRow[]>(
+    `SELECT id, kind, status, created_at, updated_at
+     FROM operation_plans
+     WHERE kind IN ('bili_batch_move', 'bili_batch_delete')
+     ORDER BY datetime(created_at) DESC, id DESC
+     LIMIT $1`,
+    [limit]
+  );
+  if (planRows.length === 0) return [];
+
+  const planIds = planRows.map((row) => row.id);
+  const placeholders = planIds.map((_, index) => `$${index + 1}`).join(", ");
+  const itemRows = await d.select<OperationPlanItemRow[]>(
+    `SELECT id, plan_id, external_id, title, action, target, status, error,
+            source_collection_external_id, source_collection_title,
+            target_collection_external_id, target_collection_title,
+            resource_id, resource_type, created_at, updated_at
+     FROM operation_plan_items
+     WHERE plan_id IN (${placeholders})
+     ORDER BY plan_id DESC, id ASC`,
+    planIds
+  );
+
+  const itemsByPlanId = new Map<number, OperationPlanHistoryItem[]>();
+  for (const itemRow of itemRows) {
+    const items = itemsByPlanId.get(itemRow.plan_id) ?? [];
+    items.push(mapOperationPlanItemRow(itemRow));
+    itemsByPlanId.set(itemRow.plan_id, items);
+  }
+
+  return planRows.map((row) => buildOperationPlanHistoryEntry(row, itemsByPlanId.get(row.id) ?? []));
 }
 
 export async function updateBiliFavoriteMoveMemberships(plan: OperationPlan): Promise<void> {
