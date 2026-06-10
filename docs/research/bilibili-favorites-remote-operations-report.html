@@ -185,7 +185,7 @@
     <header>
       <h1>Bilibili 收藏夹远端操作 MVP 实现报告</h1>
       <p class="meta">生成日期：2026-06-11。范围：<code>docs/prd/PRD-bilibili-favorites-remote-operations.md</code> 对应 issue 01-06。</p>
-      <p>本轮完成了收藏夹同步、远端 move/delete 计划、确认执行、执行历史、错误脱敏和人工 smoke-test checklist。真实账号写入验证尚未执行，应按 issue06 使用一次性收藏夹和非重要测试视频完成。</p>
+      <p>本轮完成了收藏夹同步、远端 move/delete 计划、确认执行、执行历史、错误脱敏和人工 smoke-test checklist。真实账号写入 smoke test 已在一次性收藏夹中完成，未触碰其它收藏夹。</p>
     </header>
 
     <section>
@@ -276,7 +276,57 @@
         <li><code>cargo test --manifest-path src-tauri/Cargo.toml</code>：通过，75 个 Rust 测试通过，0 失败。</li>
         <li><code>git diff --cached --check</code>：Issue05 和 Issue06 staged patch 均通过 whitespace 检查。</li>
       </ul>
-      <p class="warn">未执行真实 Bilibili 远端写入 smoke test。原因是它会修改真实账号状态，必须由人工按 issue06 在一次性收藏夹和非重要视频上执行。</p>
+      <h3>真实远端 smoke test</h3>
+      <p>执行日期：2026-06-11。测试只使用新建的一次性收藏夹 <code>ydg-src-0611</code> 和 <code>ydg-tgt-0611</code>，并使用两个非重要公开视频作为测试资源。记录中未保存 raw cookie、CSRF token、callback URL 或账号 ID。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>步骤</th>
+            <th>对象</th>
+            <th>脱敏响应</th>
+            <th>远端确认</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>创建 source 收藏夹</td>
+            <td><code>ydg-src-0611</code></td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">创建成功</td>
+          </tr>
+          <tr>
+            <td>创建 target 收藏夹</td>
+            <td><code>ydg-tgt-0611</code></td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">创建成功</td>
+          </tr>
+          <tr>
+            <td>加入测试视频</td>
+            <td><code>BV13U7k6HEjK</code>、<code>BV12aRdBgE6d</code></td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">source 收藏夹读回包含两个测试视频</td>
+          </tr>
+          <tr>
+            <td>move 测试</td>
+            <td><code>BV13U7k6HEjK</code> 从 source 移到 target</td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">target 包含该视频，source 不再包含该视频</td>
+          </tr>
+          <tr>
+            <td>delete 测试</td>
+            <td><code>BV13U7k6HEjK</code> 从 target 删除</td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">target 不再包含该视频</td>
+          </tr>
+          <tr>
+            <td>清理测试 membership</td>
+            <td><code>BV12aRdBgE6d</code> 从 source 删除</td>
+            <td><code>HTTP 200 / code 0 / OK</code></td>
+            <td class="ok">测试视频 membership 已清理</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>一次性测试收藏夹本身仍保留在账号里，便于后续复测；其中测试视频 membership 已清理。</p>
     </section>
 
     <section>
@@ -303,9 +353,9 @@
     <section>
       <h2>下一步计划</h2>
       <ol>
-        <li>按 issue06 完成一次真实远端 smoke test，只使用 <code>yadig-smoke-source-YYYYMMDD</code> 和 <code>yadig-smoke-target-YYYYMMDD</code> 这类一次性收藏夹。</li>
-        <li>基于 smoke test 结果补充 API 响应码和风险控制消息样本，保持所有记录脱敏。</li>
-        <li>规划后续 issue：创建收藏夹、把选中视频加入收藏夹、移动到新建收藏夹，以及更明确地区分 copy/add 与 move 语义。</li>
+        <li>把测试数据准备能力产品化：在 yadig 内创建一次性收藏夹，避免依赖临时脚本准备 smoke test 数据。</li>
+        <li>实现“加入收藏夹/copy”和“移动收藏夹/move”的分离语义。加入应保留原收藏夹 membership，移动应离开原收藏夹。</li>
+        <li>把选中视频加入新建收藏夹或已有收藏夹，并在 preview 中明确展示 add/copy 与 move 的差异。</li>
         <li>补一层前端测试基础设施时，将 <code>operation-plan-history</code> helper 的 contract check 升级为真实单元测试。</li>
         <li>评估是否给 operation plan schema 增加稳定 plan UUID 或 execution group，便于把草稿和一次执行结果关联起来。</li>
       </ol>
