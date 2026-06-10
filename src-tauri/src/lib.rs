@@ -124,6 +124,7 @@ pub fn run() {
             commands::library::create_bili_audio_extraction_plan,
             commands::library::create_bili_favorite_operation_plan,
             commands::library::execute_bili_audio_extraction_plan,
+            commands::library::execute_bili_favorite_move_plan,
             commands::youtube::youtube_extract_audio,
             commands::youtube::youtube_search,
             commands::youtube::youtube_check_ready,

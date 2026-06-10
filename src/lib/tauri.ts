@@ -171,6 +171,11 @@ export interface BiliAudioExtractionExecutionResult {
   }[];
 }
 
+export interface BiliFavoriteMoveExecutionResult {
+  plan: OperationPlan;
+  stopped: boolean;
+}
+
 export const tauri = {
   searchSources: (params: {
     query: string;
@@ -245,6 +250,9 @@ export const tauri = {
 
   executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
     invoke("execute_bili_audio_extraction_plan", params),
+
+  executeBiliFavoriteMovePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteMoveExecutionResult> =>
+    invoke("execute_bili_favorite_move_plan", params),
 
   // YouTube
   youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>

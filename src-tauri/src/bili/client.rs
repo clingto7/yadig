@@ -1,4 +1,4 @@
-use crate::bili::auth::BiliAuth;
+use crate::bili::auth::{BiliAuth, BiliSession};
 use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
 use crate::bili::ffmpeg;
 use crate::bili::types::*;
@@ -9,6 +9,7 @@ use crate::library::{
     BiliResourceKind, BiliSyncResult, BiliSyncScope, LibraryCollection, LibraryItem,
     LibraryItemCollection,
 };
+use std::collections::BTreeMap;
 use tokio::sync::Mutex;
 
 /// Bilibili API client. Handles HTTP requests, auth cookies, and response parsing.
@@ -23,6 +24,31 @@ struct FavoriteLibrarySnapshot {
     items: Vec<LibraryItem>,
     collections: Vec<LibraryCollection>,
     item_collections: Vec<LibraryItemCollection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteMoveResource {
+    pub id: String,
+    pub resource_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteMoveBatch {
+    pub source_media_id: String,
+    pub target_media_id: String,
+    pub resources: Vec<FavoriteMoveResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FavoriteWriteErrorKind {
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteWriteError {
+    pub kind: FavoriteWriteErrorKind,
+    pub message: String,
 }
 
 impl BiliClient {
@@ -149,6 +175,51 @@ impl BiliClient {
             synced_follows: scope.follows,
             synced_watch_later: scope.watch_later,
         })
+    }
+
+    pub async fn move_favorite_resources(
+        &self,
+        batch: &FavoriteMoveBatch,
+    ) -> std::result::Result<(), FavoriteWriteError> {
+        if batch.resources.is_empty() {
+            return Ok(());
+        }
+
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/resource/move")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_move_form(&session, batch))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite move request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite move response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        Ok(())
     }
 
     async fn favorite_library_snapshot(&self, mid: &str) -> Result<FavoriteLibrarySnapshot> {
@@ -776,6 +847,84 @@ fn session_cookie(session: &crate::bili::auth::BiliSession) -> String {
     parts.join("; ")
 }
 
+fn favorite_write_session(
+    session: Option<BiliSession>,
+) -> std::result::Result<BiliSession, FavoriteWriteError> {
+    let Some(session) = session else {
+        return Err(FavoriteWriteError {
+            kind: FavoriteWriteErrorKind::Blocked,
+            message: "Bilibili write operations require SESSDATA, bili_jct, and DedeUserID"
+                .to_string(),
+        });
+    };
+
+    if session.sessdata.trim().is_empty()
+        || session.bili_jct.trim().is_empty()
+        || session.dede_user_id.trim().is_empty()
+    {
+        return Err(FavoriteWriteError {
+            kind: FavoriteWriteErrorKind::Blocked,
+            message: "Bilibili write operations require SESSDATA, bili_jct, and DedeUserID"
+                .to_string(),
+        });
+    }
+
+    Ok(session)
+}
+
+fn favorite_move_form(
+    session: &BiliSession,
+    batch: &FavoriteMoveBatch,
+) -> BTreeMap<String, String> {
+    let resources = batch
+        .resources
+        .iter()
+        .map(|resource| format!("{}:{}", resource.id, resource.resource_type))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    BTreeMap::from([
+        ("src_media_id".to_string(), batch.source_media_id.clone()),
+        ("tar_media_id".to_string(), batch.target_media_id.clone()),
+        ("mid".to_string(), session.dede_user_id.clone()),
+        ("resources".to_string(), resources),
+        ("platform".to_string(), "web".to_string()),
+        ("csrf".to_string(), session.bili_jct.clone()),
+    ])
+}
+
+fn favorite_write_api_error(code: i32, message: &str) -> FavoriteWriteError {
+    let blocking = matches!(code, -101 | -111 | -400 | 412)
+        || message.contains("csrf")
+        || message.contains("CSRF")
+        || message.contains("验证码")
+        || message.contains("风控")
+        || message.to_ascii_lowercase().contains("captcha")
+        || message.contains("未登录")
+        || message.contains("账号");
+    let kind = if blocking {
+        FavoriteWriteErrorKind::Blocked
+    } else {
+        FavoriteWriteErrorKind::Failed
+    };
+    let prefix = if blocking {
+        "Bilibili favorite write blocked"
+    } else {
+        "Bilibili favorite write failed"
+    };
+
+    FavoriteWriteError {
+        kind,
+        message: redact_bili_error(&format!("{prefix} ({code}): {message}")),
+    }
+}
+
+fn redact_bili_error(message: &str) -> String {
+    regex::Regex::new(r"(SESSDATA|bili_jct|DedeUserID)=([^&;\s]+)")
+        .map(|re| re.replace_all(message, "$1=<redacted>").to_string())
+        .unwrap_or_else(|_| message.to_string())
+}
+
 fn number_as_string(value: &serde_json::Value) -> Option<String> {
     value
         .as_str()
@@ -1002,5 +1151,72 @@ mod tests {
             membership.raw_metadata["favTime"].as_i64(),
             Some(1781070000)
         );
+    }
+
+    #[test]
+    fn requires_complete_session_for_favorite_writes() {
+        let sessdata_only = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: String::new(),
+            dede_user_id: "42".to_string(),
+            vip_status: 0,
+        };
+
+        let err = favorite_write_session(Some(sessdata_only)).expect_err("csrf is required");
+
+        assert_eq!(err.kind, FavoriteWriteErrorKind::Blocked);
+        assert!(err.message.contains("SESSDATA, bili_jct, and DedeUserID"));
+        assert!(!err.message.contains("sess-secret"));
+        assert!(!err.message.contains("42"));
+    }
+
+    #[test]
+    fn builds_favorite_move_form_for_resource_pairs() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let batch = FavoriteMoveBatch {
+            source_media_id: "100".to_string(),
+            target_media_id: "200".to_string(),
+            resources: vec![
+                FavoriteMoveResource {
+                    id: "987654321".to_string(),
+                    resource_type: "2".to_string(),
+                },
+                FavoriteMoveResource {
+                    id: "123456789".to_string(),
+                    resource_type: "2".to_string(),
+                },
+            ],
+        };
+
+        let form = favorite_move_form(&session, &batch);
+
+        assert_eq!(form.get("src_media_id").map(String::as_str), Some("100"));
+        assert_eq!(form.get("tar_media_id").map(String::as_str), Some("200"));
+        assert_eq!(form.get("mid").map(String::as_str), Some("233333"));
+        assert_eq!(
+            form.get("resources").map(String::as_str),
+            Some("987654321:2,123456789:2")
+        );
+        assert_eq!(form.get("platform").map(String::as_str), Some("web"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+    }
+
+    #[test]
+    fn classifies_security_favorite_write_errors_as_blocking_and_redacted() {
+        let err = favorite_write_api_error(
+            -111,
+            "csrf failed SESSDATA=sess-secret&bili_jct=csrf-secret&DedeUserID=233333",
+        );
+
+        assert_eq!(err.kind, FavoriteWriteErrorKind::Blocked);
+        assert!(err.message.contains("Bilibili favorite write blocked"));
+        assert!(!err.message.contains("sess-secret"));
+        assert!(!err.message.contains("csrf-secret"));
+        assert!(!err.message.contains("233333"));
     }
 }

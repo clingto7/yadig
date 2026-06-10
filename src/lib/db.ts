@@ -639,3 +639,82 @@ export async function saveOperationPlan(plan: OperationPlan): Promise<void> {
     );
   }
 }
+
+export async function updateBiliFavoriteMoveMemberships(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_batch_move") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const sourceCollectionExternalId = item.sourceCollectionExternalId?.trim();
+    const targetCollectionExternalId = item.targetCollectionExternalId?.trim();
+    const resourceId = item.resourceId?.trim();
+    const resourceType = item.resourceType?.trim();
+    if (!targetCollectionExternalId || !resourceId || !resourceType) {
+      throw new Error(`Cannot update local move membership for ${item.title}: missing target folder or remote resource identity`);
+    }
+
+    const itemRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_items
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND item_type = 'bili_favorite_video'
+       LIMIT 1`,
+      [item.externalId]
+    );
+    const targetRows = await d.select<{ id: number; title: string }[]>(
+      `SELECT id, title FROM library_collections
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND collection_type = 'bili_favorite_folder'
+       LIMIT 1`,
+      [targetCollectionExternalId]
+    );
+    const itemId = itemRows[0]?.id;
+    const targetCollection = targetRows[0];
+    if (!itemId || !targetCollection) {
+      throw new Error(`Cannot update local move membership for ${item.title}: local item or target folder is missing`);
+    }
+
+    if (sourceCollectionExternalId) {
+      const sourceRows = await d.select<{ id: number }[]>(
+        `SELECT id FROM library_collections
+         WHERE source = 'bilibili'
+           AND external_id = $1
+           AND collection_type = 'bili_favorite_folder'
+         LIMIT 1`,
+        [sourceCollectionExternalId]
+      );
+      const sourceCollectionId = sourceRows[0]?.id;
+      if (sourceCollectionId) {
+        await d.execute(
+          `DELETE FROM library_item_collections
+           WHERE item_id = $1 AND collection_id = $2`,
+          [itemId, sourceCollectionId]
+        );
+      }
+    }
+
+    await d.execute(
+      `INSERT INTO library_item_collections
+        (item_id, collection_id, raw_metadata, last_synced_at, updated_at)
+       VALUES ($1, $2, $3, datetime('now'), datetime('now'))
+       ON CONFLICT(item_id, collection_id) DO UPDATE SET
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [
+        itemId,
+        targetCollection.id,
+        JSON.stringify({
+          resourceId,
+          resourceType,
+          bvid: item.externalId,
+          sourceFolderId: targetCollectionExternalId,
+          sourceFolderTitle: item.targetCollectionTitle ?? targetCollection.title,
+        }),
+      ]
+    );
+  }
+}

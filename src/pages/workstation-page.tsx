@@ -16,6 +16,7 @@ import {
   listLibraryItemsWithCollections,
   saveLlmAnalysis,
   saveOperationPlan,
+  updateBiliFavoriteMoveMemberships,
   upsertBiliSyncResult,
   type LibraryItemWithCollections,
 } from "@/lib/db";
@@ -303,6 +304,45 @@ export function WorkstationPage() {
     }
   }
 
+  async function executeFavoriteMovePlan() {
+    if (!plan || plan.kind !== "bili_batch_move") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This move plan has no pending items to execute.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Move ${pendingCount} favorite video${pendingCount === 1 ? "" : "s"} on Bilibili? This changes your remote account.`
+    );
+    if (!confirmed) return;
+
+    setBusy("favorite-move-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteMovePlan({ plan, confirmed: true });
+      await updateBiliFavoriteMoveMemberships(result.plan);
+      await saveOperationPlan(result.plan);
+      const [storedItems, storedFolders] = await Promise.all([
+        listLibraryItemsWithCollections(),
+        listLibraryCollections("bili_favorite_folder"),
+      ]);
+      setItems(storedItems);
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      setSelectedFavoriteIds(new Set());
+      const successCount = result.plan.items.filter((item) => item.status === "success").length;
+      setMessage(
+        result.stopped
+          ? `Move stopped after ${successCount}/${result.plan.items.length} successful items.`
+          : `Moved ${successCount}/${result.plan.items.length} favorite items.`
+      );
+    } catch (err) {
+      setMessage(`Favorite move execution failed: ${err}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-border p-6">
@@ -426,7 +466,7 @@ export function WorkstationPage() {
               <div className="rounded-lg border border-border bg-card p-4">
                 <h3 className="font-semibold">Plan Preview</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  {["pending", "skipped", "blocked", "failed"].map((status) => (
+                  {["pending", "success", "skipped", "blocked", "failed"].map((status) => (
                     <span key={status} className="rounded bg-secondary px-2 py-0.5">
                       {status} {planStatusCounts.get(status) ?? 0}
                     </span>
@@ -448,6 +488,16 @@ export function WorkstationPage() {
                     </div>
                   ))}
                 </div>
+                {plan.kind === "bili_batch_move" && (
+                  <button
+                    onClick={() => void executeFavoriteMovePlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <FolderInput className="h-4 w-4" />
+                    Execute Move
+                  </button>
+                )}
               </div>
             )}
 
