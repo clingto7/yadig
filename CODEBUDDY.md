@@ -223,3 +223,42 @@ Rust `snake_case` fields auto-convert to TypeScript `camelCase` via `serde(renam
 ### Startup Hydration
 
 `App.tsx` useEffect loads persisted settings from `tauri-plugin-store` and pushes them into Rust via `invoke("update_discogs_keys")` and `invoke("set_source_enabled")`.
+
+---
+
+## Hard-Won Lessons
+
+### Filename Sanitization — ALWAYS truncate at every entry point
+
+`File name too long (os error 36)` on EXT4 occurs when a filename exceeds 255 bytes. Bilibili video titles can be 130+ bytes (Chinese chars are 3 bytes each). Adding chapter names (`" - {chapter}.m4a"`) pushes it over the limit.
+
+**Rule: Sanitize AND truncate at EVERY entry point where a filename is constructed.**
+
+Places that need truncation (all bitten before):
+- `commands/search.rs` `download_audio()` — the Rust side receives a filename from the frontend
+- `bili/client.rs` `sanitize_filename()` — used for local file output
+- `bili/ffmpeg.rs` `temp_path()` — temp files during download
+
+**Don't rely on frontend truncation** — the frontend's `safeName` regex only strips special chars but doesn't limit length. Always truncate in the backend too.
+
+Use `200 bytes` as the threshold (leaving ~55 bytes for path prefix + extensions).
+
+### Bilibili API Endpoints
+
+Some endpoints require WBI signing (`/x/player/wbi/v2`), others don't (`/x/player/playurl`):
+- `/x/web-interface/view` — no signing needed, returns video info
+- `/x/player/playurl` — no signing needed, returns DASH audio URLs
+- `/x/player/wbi/v2` — **requires** WBI signing, returns chapter data (view_points)
+- `/x/player/v2` — also requires WBI signing (returns -400 without it)
+
+The WBI algorithm: fetch `img_key`/`sub_key` from nav API → mix with fixed index table → URL-encode and sort params → MD5 the result → append `w_rid` and `wts`.
+
+### URL Parsing — split before trim
+
+When parsing Bilibili video URLs with query params (`?spm_id_from=...`):
+```
+// WRONG: trim before split
+s.trim_end_matches('/').split('?').next()  // "BV1xxx/" ← trailing slash!
+// RIGHT: split before trim
+s.split('?').next().unwrap_or("").trim_end_matches('/')  // "BV1xxx" ✓
+```
