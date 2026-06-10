@@ -364,8 +364,10 @@ impl BiliClient {
                 .map_err(|e| YadigError::Network(format!("Create dir error: {}", e)))?;
         }
 
-        // Download to a temp file first
-        let temp_path = path.with_extension(".yadig_dl.tmp");
+        // Use a short temp file name to avoid ENAMETOOLONG
+        let temp_dir = path.parent().unwrap_or(std::path::Path::new("."));
+        let temp_path = temp_dir.join(".yadig_dl_tmp");
+
         let resp = self.http.get(url)
             .header("Referer", "https://www.bilibili.com")
             .send().await
@@ -399,7 +401,7 @@ impl BiliClient {
 
 /// Sanitize a string for use as a filename.
 /// Also truncates to avoid "File name too long" errors on some filesystems.
-/// Truncation preserves the last N bytes of the name (capped at 200 UTF-8 bytes).
+/// EXT4 max filename is 255 bytes. We reserve 50 bytes for path prefix and extensions.
 fn sanitize_filename(name: &str) -> String {
     let mut safe: String = name.chars()
         .map(|c| match c {
@@ -410,12 +412,12 @@ fn sanitize_filename(name: &str) -> String {
         .trim()
         .to_string();
 
-    // Truncate to 200 bytes to avoid ENAMETOOLONG (EXT4 limit is 255 bytes per component)
-    if safe.len() > 200 {
+    // Truncate to 180 bytes to leave room for extension and path prefix
+    if safe.len() > 180 {
         let mut truncated = String::new();
         for c in safe.chars() {
             let c_len = c.len_utf8();
-            if truncated.len() + c_len > 200 {
+            if truncated.len() + c_len > 180 {
                 break;
             }
             truncated.push(c);
