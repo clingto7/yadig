@@ -12,6 +12,38 @@ pub fn is_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Remux a DASH/fMP4 audio file to standard MP4 with faststart.
+/// Bilibili serves DASH audio as fragmented MP4 which many players
+/// (GPAC, deadbeef, foobar2000) can't handle. This converts it to
+/// a regular MP4 container with the moov atom at the front.
+pub fn remux_to_standard_mp4(input: &Path, output: &Path) -> Result<()> {
+    if !is_available() {
+        return Err(YadigError::NotFound(
+            "FFmpeg is not installed. Install it to enable audio extraction.".into()
+        ));
+    }
+
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i").arg(input)
+        .arg("-c").arg("copy")
+        .arg("-movflags").arg("+faststart")
+        .arg("-f").arg("mp4")
+        .arg(output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| YadigError::Network(format!("FFmpeg remux error: {}", e)))?;
+
+    if !status.success() {
+        return Err(YadigError::Network(
+            "FFmpeg remux failed — downloaded stream may be corrupted".into()
+        ));
+    }
+
+    Ok(())
+}
+
 /// A segment to extract from an audio file.
 #[derive(Debug, Clone)]
 pub struct SplitSegment {
@@ -86,12 +118,14 @@ fn run_ffmpeg(input: &Path, output: &Path, start: f64, end: f64, copy_codec: boo
 }
 
 /// Generate a temp file path for the full download before splitting.
+/// Uses a short hash suffix to avoid "File name too long" errors.
 pub fn temp_path(download_dir: &Path, title: &str) -> std::path::PathBuf {
-    let safe: String = title.chars().map(|c| match c {
-        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-        c => c,
-    }).collect();
-    download_dir.join(format!(".yadig_temp_{}.m4a", safe))
+    // Use a short hash of the title to keep the filename short
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    title.hash(&mut hasher);
+    let hash = hasher.finish();
+    download_dir.join(format!(".yadig_temp_{:016x}.m4a", hash))
 }
 
 #[cfg(test)]
@@ -114,6 +148,15 @@ mod tests {
     fn temp_path_generation() {
         let dir = Path::new("/tmp/downloads");
         let p = temp_path(dir, "Test: Video/Name");
-        assert_eq!(p, Path::new("/tmp/downloads/.yadig_temp_Test_ Video_Name.m4a"));
+        eprintln!("temp_path = {:?}", p);
+        let s = p.to_string_lossy();
+        assert!(s.contains(".yadig_temp_"), "should contain temp marker");
+        assert_eq!(p.extension().unwrap_or_default(), "m4a");
+        // Should use a hash, not the original title
+        let stem = p.file_stem().unwrap().to_string_lossy();
+        assert!(stem.contains("yadig_temp_"));
+        let hex_part = stem.trim_start_matches(".yadig_temp_");
+        // Just check it looks like a hash
+        assert!(!hex_part.is_empty());
     }
 }

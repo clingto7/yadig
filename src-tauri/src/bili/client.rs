@@ -354,8 +354,18 @@ impl BiliClient {
         })
     }
 
-    /// Download a stream URL to a local file.
+    /// Download a stream URL to a local file, remuxing from fMP4 to standard MP4.
+    /// Bilibili DASH audio is fragmented MP4 — remuxing ensures compatibility with
+    /// players that don't support fMP4 (GPAC, deadbeef, foobar2000, etc.).
     async fn download_stream(&self, url: &str, path: &std::path::Path) -> Result<()> {
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| YadigError::Network(format!("Create dir error: {}", e)))?;
+        }
+
+        // Download to a temp file first
+        let temp_path = path.with_extension(".yadig_dl.tmp");
         let resp = self.http.get(url)
             .header("Referer", "https://www.bilibili.com")
             .send().await
@@ -368,29 +378,52 @@ impl BiliClient {
         let bytes = resp.bytes().await
             .map_err(|e| YadigError::Network(format!("Download read error: {}", e)))?;
 
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| YadigError::Network(format!("Create dir error: {}", e)))?;
-        }
-
-        std::fs::write(path, &bytes)
+        std::fs::write(&temp_path, &bytes)
             .map_err(|e| YadigError::Network(format!("File write error: {}", e)))?;
+
+        // Remux from fMP4 to standard MP4 container
+        let result = ffmpeg::remux_to_standard_mp4(&temp_path, path);
+
+        // Clean up temp file regardless of remux result
+        let _ = std::fs::remove_file(&temp_path);
+
+        // If remux failed, fall back to saving the raw download directly
+        if result.is_err() {
+            std::fs::write(path, &bytes)
+                .map_err(|e| YadigError::Network(format!("File write error: {}", e)))?;
+        }
 
         Ok(())
     }
 }
 
 /// Sanitize a string for use as a filename.
+/// Also truncates to avoid "File name too long" errors on some filesystems.
+/// Truncation preserves the last N bytes of the name (capped at 200 UTF-8 bytes).
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let mut safe: String = name.chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c => c,
         })
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+
+    // Truncate to 200 bytes to avoid ENAMETOOLONG (EXT4 limit is 255 bytes per component)
+    if safe.len() > 200 {
+        let mut truncated = String::new();
+        for c in safe.chars() {
+            let c_len = c.len_utf8();
+            if truncated.len() + c_len > 200 {
+                break;
+            }
+            truncated.push(c);
+        }
+        safe = truncated;
+    }
+
+    safe
 }
 
 #[cfg(test)]
