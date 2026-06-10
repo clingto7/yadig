@@ -110,6 +110,32 @@ export interface AudioExtractionCandidate {
   isMusic: boolean;
 }
 
+export type FavoriteOperationAction = "move" | "delete";
+
+export type OperationPlanItemStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "skipped"
+  | "failed"
+  | "blocked";
+
+export interface FavoriteOperationCandidate {
+  externalId: string;
+  title: string;
+  sourceCollectionExternalId: string | null;
+  sourceCollectionTitle: string | null;
+  resourceId: string | null;
+  resourceType: string | null;
+}
+
+export interface FavoriteOperationPlanRequest {
+  action: FavoriteOperationAction;
+  targetCollectionExternalId: string | null;
+  targetCollectionTitle: string | null;
+  items: FavoriteOperationCandidate[];
+}
+
 export type OperationPlanKind =
   | "bili_batch_audio_extraction"
   | "bili_batch_move"
@@ -120,6 +146,14 @@ export interface OperationPlanItem {
   title: string;
   action: string;
   target: string | null;
+  status: OperationPlanItemStatus;
+  error: string | null;
+  sourceCollectionExternalId: string | null;
+  sourceCollectionTitle: string | null;
+  targetCollectionExternalId: string | null;
+  targetCollectionTitle: string | null;
+  resourceId: string | null;
+  resourceType: string | null;
 }
 
 export interface OperationPlan {
@@ -205,6 +239,9 @@ export const tauri = {
 
   createBiliAudioExtractionPlan: (params: { candidates: AudioExtractionCandidate[] }): Promise<OperationPlan> =>
     invoke("create_bili_audio_extraction_plan", params),
+
+  createBiliFavoriteOperationPlan: (request: FavoriteOperationPlanRequest): Promise<OperationPlan> =>
+    invoke("create_bili_favorite_operation_plan", { request }),
 
   executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
     invoke("execute_bili_audio_extraction_plan", params),

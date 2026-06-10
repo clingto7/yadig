@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
-import { Brain, Download, RefreshCw, Tags } from "lucide-react";
-import { tauri, type LibraryCollection, type LibraryItem, type LlmItemAnalysis, type OperationPlan } from "@/lib/tauri";
+import { Brain, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
+  tauri,
+  type FavoriteOperationAction,
+  type LibraryCollection,
+  type LibraryItem,
+  type LlmItemAnalysis,
+  type OperationPlan,
+} from "@/lib/tauri";
+import {
+  listFavoriteOperationCandidates,
   listLatestLlmAnalyses,
   listLibraryCollections,
   listLibraryItemsWithCollections,
@@ -37,6 +45,8 @@ export function WorkstationPage() {
   const [favoriteFolders, setFavoriteFolders] = useState<LibraryCollection[]>([]);
   const [resourceFilter, setResourceFilter] = useState<ResourceFilter>("all");
   const [selectedFolderId, setSelectedFolderId] = useState<string>("all");
+  const [selectedFavoriteIds, setSelectedFavoriteIds] = useState<Set<string>>(() => new Set());
+  const [targetFolderId, setTargetFolderId] = useState<string>("");
   const [analyses, setAnalyses] = useState<LlmItemAnalysis[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [instruction, setInstruction] = useState("请按领域给这些 B 站资源分类，并标出适合批量提取音频的音乐类视频。");
@@ -62,11 +72,48 @@ export function WorkstationPage() {
     );
   }, [items, resourceFilter, selectedFolderId]);
 
+  const favoritePlanContextReady =
+    resourceFilter === "bili_favorite_video" && selectedFolderId !== "all";
+
+  const selectedFolder = useMemo(
+    () => favoriteFolders.find((folder) => folder.externalId === selectedFolderId) ?? null,
+    [favoriteFolders, selectedFolderId]
+  );
+
+  const targetFolder = useMemo(
+    () => favoriteFolders.find((folder) => folder.externalId === targetFolderId) ?? null,
+    [favoriteFolders, targetFolderId]
+  );
+
+  const favoriteVisibleIds = useMemo(() => {
+    return new Set(
+      visibleItems
+        .filter((item) => item.itemType === "bili_favorite_video")
+        .map((item) => item.externalId)
+    );
+  }, [visibleItems]);
+
+  const planStatusCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of plan?.items ?? []) {
+      counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
+    }
+    return counts;
+  }, [plan]);
+
   useEffect(() => {
     if (resourceFilter !== "bili_favorite_video" && selectedFolderId !== "all") {
       setSelectedFolderId("all");
     }
   }, [resourceFilter, selectedFolderId]);
+
+  useEffect(() => {
+    setSelectedFavoriteIds(new Set());
+    setTargetFolderId((current) => {
+      if (current && current !== selectedFolderId) return current;
+      return favoriteFolders.find((folder) => folder.externalId !== selectedFolderId)?.externalId ?? "";
+    });
+  }, [favoriteFolders, resourceFilter, selectedFolderId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +163,8 @@ export function WorkstationPage() {
       setFavoriteFolders(storedFolders);
       setResourceFilter("all");
       setSelectedFolderId("all");
+      setSelectedFavoriteIds(new Set());
+      setTargetFolderId("");
       setAnalyses([]);
       setMessage(`Synced and saved ${result.items.length} Bilibili resources.`);
     } catch (err) {
@@ -173,6 +222,62 @@ export function WorkstationPage() {
       setMessage(`Created audio extraction plan with ${nextPlan.items.length} music videos.`);
     } catch (err) {
       setMessage(`Plan creation failed: ${err}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function toggleFavoriteSelection(externalId: string) {
+    setSelectedFavoriteIds((current) => {
+      const next = new Set(current);
+      if (next.has(externalId)) {
+        next.delete(externalId);
+      } else {
+        next.add(externalId);
+      }
+      return next;
+    });
+  }
+
+  function selectVisibleFavorites() {
+    setSelectedFavoriteIds(new Set(favoriteVisibleIds));
+  }
+
+  function clearFavoriteSelection() {
+    setSelectedFavoriteIds(new Set());
+  }
+
+  async function createFavoritePlan(action: FavoriteOperationAction) {
+    if (!favoritePlanContextReady) {
+      setMessage("Choose a specific favorite folder before creating a remote operation plan.");
+      return;
+    }
+    if (selectedFavoriteIds.size === 0) {
+      setMessage("Select at least one favorite video before creating a plan.");
+      return;
+    }
+    if (action === "move" && !targetFolder) {
+      setMessage("Choose a target favorite folder before creating a move plan.");
+      return;
+    }
+
+    setBusy("favorite-plan");
+    setMessage(null);
+    try {
+      const candidates = (await listFavoriteOperationCandidates(selectedFolderId))
+        .filter((candidate) => selectedFavoriteIds.has(candidate.externalId));
+      const nextPlan = await tauri.createBiliFavoriteOperationPlan({
+        action,
+        targetCollectionExternalId: action === "move" ? targetFolder?.externalId ?? null : null,
+        targetCollectionTitle: action === "move" ? targetFolder?.title ?? null : null,
+        items: candidates,
+      });
+      await saveOperationPlan(nextPlan);
+      setPlan(nextPlan);
+      const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
+      setMessage(`Created ${action} draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
+    } catch (err) {
+      setMessage(`Favorite plan creation failed: ${err}`);
     } finally {
       setBusy(null);
     }
@@ -258,7 +363,7 @@ export function WorkstationPage() {
                 </button>
                 <button
                   onClick={executeAudioPlan}
-                  disabled={busy !== null || !plan || plan.items.length === 0}
+                  disabled={busy !== null || !plan || plan.kind !== "bili_batch_audio_extraction" || plan.items.length === 0}
                   className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <Download className="h-4 w-4" />
@@ -267,10 +372,84 @@ export function WorkstationPage() {
               </div>
               {plan && (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Plan ready: {plan.items.length} video{plan.items.length === 1 ? "" : "s"}.
+                  Current plan: {plan.items.length} item{plan.items.length === 1 ? "" : "s"}.
                 </p>
               )}
             </div>
+
+            <div className="rounded-lg border border-border bg-card p-4">
+              <h3 className="font-semibold">Favorite Remote Draft</h3>
+              <div className="mt-3 space-y-3">
+                <label className="block text-sm text-muted-foreground">
+                  Move target
+                  <select
+                    value={targetFolderId}
+                    onChange={(event) => setTargetFolderId(event.target.value)}
+                    disabled={!favoritePlanContextReady}
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                  >
+                    <option value="">Select folder</option>
+                    {favoriteFolders.map((folder) => (
+                      <option key={folder.externalId} value={folder.externalId}>
+                        {folder.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <button
+                    onClick={() => void createFavoritePlan("move")}
+                    disabled={!favoritePlanContextReady || selectedFavoriteIds.size === 0 || busy !== null}
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
+                  >
+                    <FolderInput className="h-4 w-4" />
+                    Move Draft
+                  </button>
+                  <button
+                    onClick={() => void createFavoritePlan("delete")}
+                    disabled={!favoritePlanContextReady || selectedFavoriteIds.size === 0 || busy !== null}
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete Draft
+                  </button>
+                </div>
+                {favoritePlanContextReady && (
+                  <p className="text-sm text-muted-foreground">
+                    {selectedFavoriteIds.size} selected in {selectedFolder?.title ?? "favorite folder"}.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {plan && plan.kind !== "bili_batch_audio_extraction" && (
+              <div className="rounded-lg border border-border bg-card p-4">
+                <h3 className="font-semibold">Plan Preview</h3>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  {["pending", "skipped", "blocked", "failed"].map((status) => (
+                    <span key={status} className="rounded bg-secondary px-2 py-0.5">
+                      {status} {planStatusCounts.get(status) ?? 0}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-3 max-h-64 space-y-2 overflow-y-auto text-sm">
+                  {plan.items.map((item) => (
+                    <div key={`${item.externalId}:${item.sourceCollectionExternalId ?? ""}`} className="rounded border border-border p-2">
+                      <div className="font-medium">{item.title}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {item.sourceCollectionTitle ?? "Unknown source"}
+                        {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
+                        {" · "}
+                        {item.status}
+                      </div>
+                      {item.error && (
+                        <div className="mt-1 text-xs text-destructive">{item.error}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {message && (
               <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
@@ -315,6 +494,22 @@ export function WorkstationPage() {
                   </select>
                 </label>
               )}
+              {favoritePlanContextReady && (
+                <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                  <button
+                    onClick={selectVisibleFavorites}
+                    className="inline-flex h-8 items-center rounded-md border border-border px-3 hover:bg-secondary"
+                  >
+                    Select Visible
+                  </button>
+                  <button
+                    onClick={clearFavoriteSelection}
+                    className="inline-flex h-8 items-center rounded-md border border-border px-3 hover:bg-secondary"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
             </div>
             <div className="divide-y divide-border">
               {visibleItems.length === 0 && (
@@ -331,6 +526,15 @@ export function WorkstationPage() {
                   >
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
+                        {favoritePlanContextReady && item.itemType === "bili_favorite_video" && (
+                          <input
+                            type="checkbox"
+                            checked={selectedFavoriteIds.has(item.externalId)}
+                            onChange={() => toggleFavoriteSelection(item.externalId)}
+                            className="h-4 w-4"
+                            aria-label={`Select ${item.title}`}
+                          />
+                        )}
                         <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
                           {itemTypeLabel(item.itemType)}
                         </span>

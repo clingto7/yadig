@@ -2,6 +2,7 @@ import Database from "@tauri-apps/plugin-sql";
 import type {
   BiliSyncResult,
   BiliSyncScope,
+  FavoriteOperationCandidate,
   LibraryCollection,
   LibraryCollectionType,
   LibraryItem,
@@ -170,6 +171,14 @@ type LibraryCollectionRow = {
   raw_metadata: string;
 };
 
+type FavoriteOperationCandidateRow = {
+  external_id: string;
+  title: string;
+  source_collection_external_id: string;
+  source_collection_title: string;
+  raw_metadata: string;
+};
+
 function parseRawMetadata(rawMetadata: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(rawMetadata);
@@ -202,6 +211,13 @@ function mapLibraryCollection(row: LibraryCollectionRow): LibraryCollection {
     title: row.title,
     rawMetadata: parseRawMetadata(row.raw_metadata),
   };
+}
+
+function rawMetadataString(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return null;
 }
 
 export type LibraryItemWithCollections = LibraryItem & {
@@ -465,6 +481,41 @@ export async function listLibraryItemsWithCollections(): Promise<LibraryItemWith
   return items;
 }
 
+export async function listFavoriteOperationCandidates(
+  sourceCollectionExternalId: string
+): Promise<FavoriteOperationCandidate[]> {
+  const d = await getDb();
+  const rows = await d.select<FavoriteOperationCandidateRow[]>(
+    `SELECT li.external_id,
+            li.title,
+            lc.external_id AS source_collection_external_id,
+            lc.title AS source_collection_title,
+            lic.raw_metadata
+     FROM library_item_collections lic
+     INNER JOIN library_items li ON li.id = lic.item_id
+     INNER JOIN library_collections lc ON lc.id = lic.collection_id
+     WHERE li.source = 'bilibili'
+       AND li.item_type = 'bili_favorite_video'
+       AND lc.source = 'bilibili'
+       AND lc.collection_type = 'bili_favorite_folder'
+       AND lc.external_id = $1
+     ORDER BY li.title COLLATE NOCASE ASC`,
+    [sourceCollectionExternalId]
+  );
+
+  return rows.map((row) => {
+    const rawMetadata = parseRawMetadata(row.raw_metadata);
+    return {
+      externalId: row.external_id,
+      title: row.title,
+      sourceCollectionExternalId: row.source_collection_external_id,
+      sourceCollectionTitle: row.source_collection_title,
+      resourceId: rawMetadataString(rawMetadata, "resourceId"),
+      resourceType: rawMetadataString(rawMetadata, "resourceType"),
+    };
+  });
+}
+
 export async function listLatestLlmAnalyses(): Promise<LlmItemAnalysis[]> {
   const d = await getDb();
   const rows = await d.select<{ response_json: string }[]>(
@@ -564,9 +615,27 @@ export async function saveOperationPlan(plan: OperationPlan): Promise<void> {
 
   for (const item of plan.items) {
     await d.execute(
-      `INSERT INTO operation_plan_items (plan_id, external_id, title, action, target)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [planId, item.externalId, item.title, item.action, item.target]
+      `INSERT INTO operation_plan_items
+        (plan_id, external_id, title, action, target, status, error,
+         source_collection_external_id, source_collection_title,
+         target_collection_external_id, target_collection_title,
+         resource_id, resource_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        planId,
+        item.externalId,
+        item.title,
+        item.action,
+        item.target,
+        item.status ?? "pending",
+        item.error ?? null,
+        item.sourceCollectionExternalId ?? null,
+        item.sourceCollectionTitle ?? null,
+        item.targetCollectionExternalId ?? null,
+        item.targetCollectionTitle ?? null,
+        item.resourceId ?? null,
+        item.resourceType ?? null,
+      ]
     );
   }
 }

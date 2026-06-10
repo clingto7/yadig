@@ -57,6 +57,12 @@ pub fn run() {
             sql: include_str!("../migrations/005_library_item_collection_metadata.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "add_operation_plan_item_remote_fields",
+            sql: include_str!("../migrations/006_operation_plan_item_remote_fields.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let mut registry = SourceRegistry::new();
@@ -116,6 +122,7 @@ pub fn run() {
             commands::library::bili_sync_library,
             commands::library::llm_analyze_items,
             commands::library::create_bili_audio_extraction_plan,
+            commands::library::create_bili_favorite_operation_plan,
             commands::library::execute_bili_audio_extraction_plan,
             commands::youtube::youtube_extract_audio,
             commands::youtube::youtube_search,

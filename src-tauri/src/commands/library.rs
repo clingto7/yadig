@@ -2,7 +2,8 @@ use crate::bili::auth::BiliAuth;
 use crate::bili::client::BiliClient;
 use crate::error::{Result, YadigError};
 use crate::library::{
-    AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, OperationPlan, OperationPlanKind,
+    AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteOperationPlanRequest,
+    OperationPlan, OperationPlanKind,
 };
 use crate::llm::{analyze_items, LlmAnalysisResponse, LlmAnalyzeItemsRequest};
 use tauri::State;
@@ -25,6 +26,13 @@ pub async fn create_bili_audio_extraction_plan(
     candidates: Vec<AudioExtractionCandidate>,
 ) -> Result<OperationPlan> {
     Ok(OperationPlan::for_bili_audio_extraction(candidates))
+}
+
+#[tauri::command]
+pub async fn create_bili_favorite_operation_plan(
+    request: FavoriteOperationPlanRequest,
+) -> Result<OperationPlan> {
+    Ok(OperationPlan::for_bili_favorite_operation(request))
 }
 
 #[tauri::command]
