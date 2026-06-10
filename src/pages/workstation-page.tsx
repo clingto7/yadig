@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
 import { Brain, Download, RefreshCw, Tags } from "lucide-react";
-import { tauri, type LibraryItem, type LlmItemAnalysis, type OperationPlan } from "@/lib/tauri";
-import { listLatestLlmAnalyses, listLibraryItems, saveLlmAnalysis, saveOperationPlan, upsertLibraryItems } from "@/lib/db";
+import { tauri, type LibraryCollection, type LibraryItem, type LlmItemAnalysis, type OperationPlan } from "@/lib/tauri";
+import {
+  listLatestLlmAnalyses,
+  listLibraryCollections,
+  listLibraryItemsWithCollections,
+  saveLlmAnalysis,
+  saveOperationPlan,
+  upsertBiliSyncResult,
+  type LibraryItemWithCollections,
+} from "@/lib/db";
+
+type ResourceFilter = "all" | LibraryItem["itemType"];
 
 function itemTypeLabel(type: LibraryItem["itemType"]) {
   switch (type) {
@@ -23,7 +33,10 @@ function isMusicSuggestion(analysis?: LlmItemAnalysis) {
 }
 
 export function WorkstationPage() {
-  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [items, setItems] = useState<LibraryItemWithCollections[]>([]);
+  const [favoriteFolders, setFavoriteFolders] = useState<LibraryCollection[]>([]);
+  const [resourceFilter, setResourceFilter] = useState<ResourceFilter>("all");
+  const [selectedFolderId, setSelectedFolderId] = useState<string>("all");
   const [analyses, setAnalyses] = useState<LlmItemAnalysis[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [instruction, setInstruction] = useState("请按领域给这些 B 站资源分类，并标出适合批量提取音频的音乐类视频。");
@@ -34,13 +47,39 @@ export function WorkstationPage() {
     return new Map(analyses.map((analysis) => [analysis.externalId, analysis]));
   }, [analyses]);
 
+  const visibleItems = useMemo(() => {
+    const typeFilteredItems =
+      resourceFilter === "all"
+        ? items
+        : items.filter((item) => item.itemType === resourceFilter);
+
+    if (resourceFilter !== "bili_favorite_video" || selectedFolderId === "all") {
+      return typeFilteredItems;
+    }
+
+    return typeFilteredItems.filter((item) =>
+      item.collections.some((collection) => collection.externalId === selectedFolderId)
+    );
+  }, [items, resourceFilter, selectedFolderId]);
+
+  useEffect(() => {
+    if (resourceFilter !== "bili_favorite_video" && selectedFolderId !== "all") {
+      setSelectedFolderId("all");
+    }
+  }, [resourceFilter, selectedFolderId]);
+
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([listLibraryItems(), listLatestLlmAnalyses()])
-      .then(([storedItems, storedAnalyses]) => {
+    Promise.all([
+      listLibraryItemsWithCollections(),
+      listLibraryCollections("bili_favorite_folder"),
+      listLatestLlmAnalyses(),
+    ])
+      .then(([storedItems, storedFolders, storedAnalyses]) => {
         if (!cancelled) {
           setItems(storedItems);
+          setFavoriteFolders(storedFolders);
           setAnalyses(storedAnalyses);
         }
       })
@@ -68,8 +107,15 @@ export function WorkstationPage() {
         follows: result.syncedFollows,
         watchLater: result.syncedWatchLater,
       };
-      await upsertLibraryItems(result.items, syncedScope);
-      setItems(await listLibraryItems());
+      await upsertBiliSyncResult(result, syncedScope);
+      const [storedItems, storedFolders] = await Promise.all([
+        listLibraryItemsWithCollections(),
+        listLibraryCollections("bili_favorite_folder"),
+      ]);
+      setItems(storedItems);
+      setFavoriteFolders(storedFolders);
+      setResourceFilter("all");
+      setSelectedFolderId("all");
       setAnalyses([]);
       setMessage(`Synced and saved ${result.items.length} Bilibili resources.`);
     } catch (err) {
@@ -239,22 +285,63 @@ export function WorkstationPage() {
               <p className="text-sm text-muted-foreground">
                 {items.length} resources in the local library. AI suggestions stay local until you choose an action.
               </p>
+              <label className="mt-3 block text-sm text-muted-foreground">
+                Resource type
+                <select
+                  value={resourceFilter}
+                  onChange={(event) => setResourceFilter(event.target.value as ResourceFilter)}
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="all">All resources</option>
+                  <option value="bili_favorite_video">Favorites</option>
+                  <option value="bili_watch_later_video">Watch Later</option>
+                  <option value="bili_followed_up">Following</option>
+                </select>
+              </label>
+              {resourceFilter === "bili_favorite_video" && favoriteFolders.length > 0 && (
+                <label className="mt-3 block text-sm text-muted-foreground">
+                  Favorite folder
+                  <select
+                    value={selectedFolderId}
+                    onChange={(event) => setSelectedFolderId(event.target.value)}
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="all">All favorite folders</option>
+                    {favoriteFolders.map((folder) => (
+                      <option key={folder.externalId} value={folder.externalId}>
+                        {folder.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
             <div className="divide-y divide-border">
-              {items.length === 0 && (
+              {visibleItems.length === 0 && (
                 <div className="p-6 text-sm text-muted-foreground">
                   Sync Bilibili to start building your personal resource library.
                 </div>
               )}
-              {items.map((item) => {
+              {visibleItems.map((item) => {
                 const analysis = analysisById.get(item.externalId);
                 return (
-                  <div key={`${item.itemType}:${item.externalId}`} className="grid gap-3 p-4 md:grid-cols-[1fr_260px]">
+                  <div
+                    key={`${item.itemType}:${item.externalId}:${item.collections.map((collection) => collection.externalId).join(",")}`}
+                    className="grid gap-3 p-4 md:grid-cols-[1fr_260px]"
+                  >
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
                           {itemTypeLabel(item.itemType)}
                         </span>
+                        {item.collections.map((collection) => (
+                          <span
+                            key={collection.externalId}
+                            className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground"
+                          >
+                            {collection.title}
+                          </span>
+                        ))}
                         {isMusicSuggestion(analysis) && (
                           <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
                             Music candidate

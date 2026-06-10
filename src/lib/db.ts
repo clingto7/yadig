@@ -1,5 +1,14 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { BiliSyncScope, LibraryItem, LlmItemAnalysis, LlmProviderConfig, OperationPlan } from "@/lib/tauri";
+import type {
+  BiliSyncResult,
+  BiliSyncScope,
+  LibraryCollection,
+  LibraryCollectionType,
+  LibraryItem,
+  LlmItemAnalysis,
+  LlmProviderConfig,
+  OperationPlan,
+} from "@/lib/tauri";
 
 let db: Database | null = null;
 
@@ -142,6 +151,7 @@ export async function clearHistory(): Promise<void> {
 // --- Personal Media Library ---
 
 type LibraryItemRow = {
+  id?: number;
   source: string;
   external_id: string;
   item_type: LibraryItem["itemType"];
@@ -149,6 +159,14 @@ type LibraryItemRow = {
   author: string | null;
   url: string | null;
   image_url: string | null;
+  raw_metadata: string;
+};
+
+type LibraryCollectionRow = {
+  source: string;
+  external_id: string;
+  collection_type: LibraryCollectionType;
+  title: string;
   raw_metadata: string;
 };
 
@@ -175,6 +193,20 @@ function mapLibraryItem(row: LibraryItemRow): LibraryItem {
     rawMetadata: parseRawMetadata(row.raw_metadata),
   };
 }
+
+function mapLibraryCollection(row: LibraryCollectionRow): LibraryCollection {
+  return {
+    source: row.source,
+    externalId: row.external_id,
+    collectionType: row.collection_type,
+    title: row.title,
+    rawMetadata: parseRawMetadata(row.raw_metadata),
+  };
+}
+
+export type LibraryItemWithCollections = LibraryItem & {
+  collections: LibraryCollection[];
+};
 
 export async function upsertLibraryItems(items: LibraryItem[], syncedScope?: BiliSyncScope): Promise<void> {
   const d = await getDb();
@@ -235,6 +267,132 @@ export async function upsertLibraryItems(items: LibraryItem[], syncedScope?: Bil
   }
 }
 
+async function upsertLibraryCollections(collections: LibraryCollection[]): Promise<void> {
+  const d = await getDb();
+  for (const collection of collections) {
+    await d.execute(
+      `INSERT INTO library_collections
+        (source, external_id, collection_type, title, raw_metadata, last_synced_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, datetime('now'), datetime('now'))
+       ON CONFLICT(source, external_id, collection_type) DO UPDATE SET
+        title = excluded.title,
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [
+        collection.source,
+        collection.externalId,
+        collection.collectionType,
+        collection.title,
+        JSON.stringify(collection.rawMetadata ?? {}),
+      ]
+    );
+  }
+}
+
+async function upsertLibraryItemCollections(syncResult: BiliSyncResult): Promise<void> {
+  const d = await getDb();
+  for (const membership of syncResult.itemCollections) {
+    const itemRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_items
+       WHERE source = $1 AND external_id = $2 AND item_type = $3
+       LIMIT 1`,
+      [membership.source, membership.itemExternalId, membership.itemType]
+    );
+    const collectionRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_collections
+       WHERE source = $1 AND external_id = $2 AND collection_type = $3
+       LIMIT 1`,
+      [membership.source, membership.collectionExternalId, membership.collectionType]
+    );
+    const itemId = itemRows[0]?.id;
+    const collectionId = collectionRows[0]?.id;
+    if (!itemId || !collectionId) continue;
+
+    await d.execute(
+      `INSERT INTO library_item_collections
+        (item_id, collection_id, raw_metadata, last_synced_at, updated_at)
+       VALUES ($1, $2, $3, datetime('now'), datetime('now'))
+       ON CONFLICT(item_id, collection_id) DO UPDATE SET
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [itemId, collectionId, JSON.stringify(membership.rawMetadata ?? {})]
+    );
+  }
+}
+
+async function pruneBiliFavoriteCollections(syncResult: BiliSyncResult): Promise<void> {
+  if (!syncResult.syncedFavorites) return;
+
+  const d = await getDb();
+  const collectionIds = syncResult.collections
+    .filter((collection) => collection.source === "bilibili" && collection.collectionType === "bili_favorite_folder")
+    .map((collection) => collection.externalId);
+  const membershipKeys = new Set(
+    syncResult.itemCollections.map(
+      (membership) => `${membership.itemExternalId}\u0000${membership.collectionExternalId}`
+    )
+  );
+
+  const existingMemberships = await d.select<{
+    item_id: number;
+    collection_id: number;
+    item_external_id: string;
+    collection_external_id: string;
+  }[]>(
+    `SELECT lic.item_id,
+            lic.collection_id,
+            li.external_id AS item_external_id,
+            lc.external_id AS collection_external_id
+     FROM library_item_collections lic
+     INNER JOIN library_items li ON li.id = lic.item_id
+     INNER JOIN library_collections lc ON lc.id = lic.collection_id
+     WHERE li.source = 'bilibili'
+       AND li.item_type = 'bili_favorite_video'
+       AND lc.source = 'bilibili'
+       AND lc.collection_type = 'bili_favorite_folder'`,
+    []
+  );
+
+  for (const row of existingMemberships) {
+    if (!membershipKeys.has(`${row.item_external_id}\u0000${row.collection_external_id}`)) {
+      await d.execute(
+        `DELETE FROM library_item_collections
+         WHERE item_id = $1 AND collection_id = $2`,
+        [row.item_id, row.collection_id]
+      );
+    }
+  }
+
+  if (collectionIds.length === 0) {
+    await d.execute(
+      "DELETE FROM library_collections WHERE source = 'bilibili' AND collection_type = 'bili_favorite_folder'",
+      []
+    );
+    return;
+  }
+
+  const placeholders = collectionIds.map((_, index) => `$${index + 1}`).join(", ");
+  await d.execute(
+    `DELETE FROM library_collections
+     WHERE source = 'bilibili'
+       AND collection_type = 'bili_favorite_folder'
+       AND external_id NOT IN (${placeholders})`,
+    collectionIds
+  );
+}
+
+export async function upsertBiliSyncResult(
+  syncResult: BiliSyncResult,
+  syncedScope?: BiliSyncScope
+): Promise<void> {
+  await upsertLibraryItems(syncResult.items, syncedScope);
+  await upsertLibraryCollections(syncResult.collections);
+  await upsertLibraryItemCollections(syncResult);
+  await pruneBiliFavoriteCollections(syncResult);
+}
+
 export async function listLibraryItems(): Promise<LibraryItem[]> {
   const d = await getDb();
   const rows = await d.select<LibraryItemRow[]>(
@@ -244,6 +402,67 @@ export async function listLibraryItems(): Promise<LibraryItem[]> {
     []
   );
   return rows.map(mapLibraryItem);
+}
+
+export async function listLibraryCollections(
+  collectionType?: LibraryCollectionType
+): Promise<LibraryCollection[]> {
+  const d = await getDb();
+  const rows = collectionType
+    ? await d.select<LibraryCollectionRow[]>(
+        `SELECT source, external_id, collection_type, title, raw_metadata
+         FROM library_collections
+         WHERE collection_type = $1
+         ORDER BY title COLLATE NOCASE ASC`,
+        [collectionType]
+      )
+    : await d.select<LibraryCollectionRow[]>(
+        `SELECT source, external_id, collection_type, title, raw_metadata
+         FROM library_collections
+         ORDER BY collection_type ASC, title COLLATE NOCASE ASC`,
+        []
+      );
+  return rows.map(mapLibraryCollection);
+}
+
+export async function listLibraryItemsWithCollections(): Promise<LibraryItemWithCollections[]> {
+  const d = await getDb();
+  const itemRows = await d.select<(LibraryItemRow & { id: number })[]>(
+    `SELECT id, source, external_id, item_type, title, author, url, image_url, raw_metadata
+     FROM library_items
+     ORDER BY last_synced_at DESC, updated_at DESC`,
+    []
+  );
+
+  const items = itemRows.map((row) => ({
+    ...mapLibraryItem(row),
+    collections: [] as LibraryCollection[],
+  }));
+  const itemById = new Map(itemRows.map((row, index) => [row.id, items[index]]));
+
+  const collectionRows = await d.select<(LibraryCollectionRow & { item_id: number })[]>(
+    `SELECT lic.item_id,
+            lc.source,
+            lc.external_id,
+            lc.collection_type,
+            lc.title,
+            lc.raw_metadata
+     FROM library_item_collections lic
+     INNER JOIN library_collections lc ON lc.id = lic.collection_id
+     INNER JOIN library_items li ON li.id = lic.item_id
+     WHERE li.source = 'bilibili'
+       AND li.item_type = 'bili_favorite_video'
+       AND lc.source = 'bilibili'
+       AND lc.collection_type = 'bili_favorite_folder'
+     ORDER BY lc.title COLLATE NOCASE ASC`,
+    []
+  );
+
+  for (const row of collectionRows) {
+    itemById.get(row.item_id)?.collections.push(mapLibraryCollection(row));
+  }
+
+  return items;
 }
 
 export async function listLatestLlmAnalyses(): Promise<LlmItemAnalysis[]> {

@@ -51,6 +51,12 @@ pub fn run() {
             sql: include_str!("../migrations/004_library_tables.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "add_library_item_collection_metadata",
+            sql: include_str!("../migrations/005_library_item_collection_metadata.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let mut registry = SourceRegistry::new();

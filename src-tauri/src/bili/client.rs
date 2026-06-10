@@ -5,7 +5,10 @@ use crate::bili::types::*;
 use crate::bili::url::parse_bilibili_url;
 use crate::bili::wbi::{self, WbiKeys};
 use crate::error::{Result, YadigError};
-use crate::library::{BiliResourceKind, BiliSyncResult, BiliSyncScope, LibraryItem};
+use crate::library::{
+    BiliResourceKind, BiliSyncResult, BiliSyncScope, LibraryCollection, LibraryItem,
+    LibraryItemCollection,
+};
 use tokio::sync::Mutex;
 
 /// Bilibili API client. Handles HTTP requests, auth cookies, and response parsing.
@@ -13,6 +16,13 @@ pub struct BiliClient {
     http: reqwest::Client,
     auth: BiliAuth,
     wbi_keys: Mutex<Option<WbiKeys>>,
+}
+
+#[derive(Default)]
+struct FavoriteLibrarySnapshot {
+    items: Vec<LibraryItem>,
+    collections: Vec<LibraryCollection>,
+    item_collections: Vec<LibraryItemCollection>,
 }
 
 impl BiliClient {
@@ -116,8 +126,13 @@ impl BiliClient {
         }
 
         let mut items = Vec::new();
+        let mut collections = Vec::new();
+        let mut item_collections = Vec::new();
         if scope.favorites {
-            items.extend(self.favorite_library_items(mid).await?);
+            let snapshot = self.favorite_library_snapshot(mid).await?;
+            items.extend(snapshot.items);
+            collections.extend(snapshot.collections);
+            item_collections.extend(snapshot.item_collections);
         }
         if scope.watch_later {
             items.extend(self.watch_later_library_items().await?);
@@ -128,13 +143,15 @@ impl BiliClient {
 
         Ok(BiliSyncResult {
             items,
+            collections,
+            item_collections,
             synced_favorites: scope.favorites,
             synced_follows: scope.follows,
             synced_watch_later: scope.watch_later,
         })
     }
 
-    async fn favorite_library_items(&self, mid: &str) -> Result<Vec<LibraryItem>> {
+    async fn favorite_library_snapshot(&self, mid: &str) -> Result<FavoriteLibrarySnapshot> {
         let url = format!(
             "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={}",
             mid
@@ -145,28 +162,32 @@ impl BiliClient {
             .and_then(|value| value.as_array())
             .cloned()
             .unwrap_or_default();
-        let mut items = Vec::new();
+        let mut snapshot = FavoriteLibrarySnapshot::default();
 
         for folder in folders {
-            let Some(media_id) = folder.get("id").and_then(number_as_string) else {
+            let Some(collection) = normalize_bili_favorite_folder(folder.clone()) else {
                 continue;
             };
-            items.extend(self.favorite_folder_items(&media_id, &folder).await?);
+            let (items, memberships) = self.favorite_folder_items(&collection, &folder).await?;
+            snapshot.collections.push(collection);
+            snapshot.items.extend(items);
+            snapshot.item_collections.extend(memberships);
         }
 
-        Ok(items)
+        Ok(snapshot)
     }
 
     async fn favorite_folder_items(
         &self,
-        media_id: &str,
+        collection: &LibraryCollection,
         folder: &serde_json::Value,
-    ) -> Result<Vec<LibraryItem>> {
+    ) -> Result<(Vec<LibraryItem>, Vec<LibraryItemCollection>)> {
         let mut items = Vec::new();
+        let mut memberships = Vec::new();
         for pn in 1..=50 {
             let url = format!(
                 "https://api.bilibili.com/x/v3/fav/resource/list?media_id={}&platform=web&pn={}&ps=20",
-                media_id, pn
+                collection.external_id, pn
             );
             let data = self.get_bili_data(&url).await?;
             let medias = data
@@ -175,9 +196,16 @@ impl BiliClient {
                 .cloned()
                 .unwrap_or_default();
             for media in medias {
-                if let Some(item) =
-                    normalize_bili_video(BiliResourceKind::FavoriteVideo, media, Some(folder))
-                {
+                if let Some(item) = normalize_bili_video(
+                    BiliResourceKind::FavoriteVideo,
+                    media.clone(),
+                    Some(folder),
+                ) {
+                    if let Some(membership) =
+                        normalize_bili_favorite_membership(&item, collection, &media)
+                    {
+                        memberships.push(membership);
+                    }
                     items.push(item);
                 }
             }
@@ -189,7 +217,7 @@ impl BiliClient {
                 break;
             }
         }
-        Ok(items)
+        Ok((items, memberships))
     }
 
     async fn watch_later_library_items(&self) -> Result<Vec<LibraryItem>> {
@@ -756,6 +784,19 @@ fn number_as_string(value: &serde_json::Value) -> Option<String> {
         .or_else(|| value.as_u64().map(|n| n.to_string()))
 }
 
+fn normalize_bili_favorite_folder(folder: serde_json::Value) -> Option<LibraryCollection> {
+    let media_id = folder.get("id").and_then(number_as_string)?;
+    let title = folder
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Untitled favorite folder")
+        .to_string();
+
+    Some(LibraryCollection::from_bili_favorite_folder(
+        media_id, title, folder,
+    ))
+}
+
 fn normalize_bili_video(
     kind: BiliResourceKind,
     media: serde_json::Value,
@@ -786,9 +827,18 @@ fn normalize_bili_video(
         .map(ToString::to_string);
     let mut raw_metadata = media;
     if let Some(folder) = folder {
+        let source_folder_id = folder.get("id").and_then(number_as_string);
         raw_metadata["collection"] = serde_json::json!({
             "id": folder.get("id").cloned().unwrap_or(serde_json::Value::Null),
             "title": folder.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        });
+        raw_metadata["favorite"] = serde_json::json!({
+            "resourceId": raw_metadata.get("id").and_then(number_as_string),
+            "resourceType": raw_metadata.get("type").and_then(number_as_string),
+            "bvid": bvid,
+            "sourceFolderId": source_folder_id,
+            "sourceFolderTitle": folder.get("title").and_then(|value| value.as_str()),
+            "favTime": raw_metadata.get("fav_time").and_then(|value| value.as_i64()),
         });
     }
 
@@ -799,6 +849,31 @@ fn normalize_bili_video(
         author,
         raw_metadata,
     ))
+}
+
+fn normalize_bili_favorite_membership(
+    item: &LibraryItem,
+    collection: &LibraryCollection,
+    media: &serde_json::Value,
+) -> Option<LibraryItemCollection> {
+    let resource_id = media.get("id").and_then(number_as_string)?;
+    let resource_type = media.get("type").and_then(number_as_string)?;
+
+    Some(LibraryItemCollection {
+        source: "bilibili".to_string(),
+        item_external_id: item.external_id.clone(),
+        item_type: item.item_type.clone(),
+        collection_external_id: collection.external_id.clone(),
+        collection_type: collection.collection_type.clone(),
+        raw_metadata: serde_json::json!({
+            "resourceId": resource_id,
+            "resourceType": resource_type,
+            "bvid": item.external_id,
+            "sourceFolderId": collection.external_id,
+            "sourceFolderTitle": collection.title,
+            "favTime": media.get("fav_time").and_then(|value| value.as_i64()),
+        }),
+    })
 }
 
 fn extract_bvid_from_text(text: &str) -> Option<String> {
@@ -847,5 +922,85 @@ mod tests {
         let part = sanitize_filename("Track 1/2");
         let filename = format!("{} - {}.m4a", title, part);
         assert_eq!(filename, "Album_ Vol. 1 - Track 1_2.m4a");
+    }
+
+    #[test]
+    fn normalizes_favorite_folder_into_library_collection() {
+        let folder = serde_json::json!({
+            "id": 456,
+            "title": "Samples",
+            "media_count": 2
+        });
+
+        let collection = normalize_bili_favorite_folder(folder).expect("folder should normalize");
+
+        assert_eq!(collection.source, "bilibili");
+        assert_eq!(collection.external_id, "456");
+        assert_eq!(
+            collection.collection_type,
+            crate::library::LibraryCollectionType::BiliFavoriteFolder
+        );
+        assert_eq!(collection.title, "Samples");
+        assert_eq!(collection.raw_metadata["media_count"].as_i64(), Some(2));
+    }
+
+    #[test]
+    fn normalizes_favorite_video_membership_with_remote_identity() {
+        let folder = serde_json::json!({
+            "id": 456,
+            "title": "Samples"
+        });
+        let collection =
+            normalize_bili_favorite_folder(folder.clone()).expect("folder should normalize");
+        let media = serde_json::json!({
+            "id": 987654321,
+            "type": 2,
+            "bvid": "BV1remote1234",
+            "title": "Remote favorite video",
+            "upper": { "name": "Music UP" },
+            "fav_time": 1781070000
+        });
+
+        let item = normalize_bili_video(
+            BiliResourceKind::FavoriteVideo,
+            media.clone(),
+            Some(&folder),
+        )
+        .expect("video should normalize");
+        let membership = normalize_bili_favorite_membership(&item, &collection, &media)
+            .expect("membership should normalize");
+
+        assert_eq!(item.external_id, "BV1remote1234");
+        assert_eq!(
+            item.raw_metadata["favorite"]["resourceId"].as_str(),
+            Some("987654321")
+        );
+        assert_eq!(
+            item.raw_metadata["favorite"]["resourceType"].as_str(),
+            Some("2")
+        );
+        assert_eq!(
+            item.raw_metadata["favorite"]["sourceFolderId"].as_str(),
+            Some("456")
+        );
+        assert_eq!(membership.item_external_id, "BV1remote1234");
+        assert_eq!(membership.collection_external_id, "456");
+        assert_eq!(
+            membership.raw_metadata["resourceId"].as_str(),
+            Some("987654321")
+        );
+        assert_eq!(membership.raw_metadata["resourceType"].as_str(), Some("2"));
+        assert_eq!(
+            membership.raw_metadata["bvid"].as_str(),
+            Some("BV1remote1234")
+        );
+        assert_eq!(
+            membership.raw_metadata["sourceFolderId"].as_str(),
+            Some("456")
+        );
+        assert_eq!(
+            membership.raw_metadata["favTime"].as_i64(),
+            Some(1781070000)
+        );
     }
 }

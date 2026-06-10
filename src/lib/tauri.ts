@@ -27,6 +27,8 @@ export type LibraryItemType =
   | "bili_watch_later_video"
   | "bili_followed_up";
 
+export type LibraryCollectionType = "bili_favorite_folder";
+
 export interface LibraryItem {
   source: string;
   externalId: string;
@@ -38,6 +40,23 @@ export interface LibraryItem {
   rawMetadata: Record<string, unknown>;
 }
 
+export interface LibraryCollection {
+  source: string;
+  externalId: string;
+  collectionType: LibraryCollectionType;
+  title: string;
+  rawMetadata: Record<string, unknown>;
+}
+
+export interface LibraryItemCollection {
+  source: string;
+  itemExternalId: string;
+  itemType: LibraryItemType;
+  collectionExternalId: string;
+  collectionType: LibraryCollectionType;
+  rawMetadata: Record<string, unknown>;
+}
+
 export interface BiliSyncScope {
   favorites: boolean;
   follows: boolean;
@@ -46,6 +65,8 @@ export interface BiliSyncScope {
 
 export interface BiliSyncResult {
   items: LibraryItem[];
+  collections: LibraryCollection[];
+  itemCollections: LibraryItemCollection[];
   syncedFavorites: boolean;
   syncedFollows: boolean;
   syncedWatchLater: boolean;
