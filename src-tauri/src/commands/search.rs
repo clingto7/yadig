@@ -83,6 +83,7 @@ pub async fn download_audio(url: String, filename: String) -> Result<String> {
     };
 
     let filepath = downloads.join(&truncated);
+    eprintln!("[download_audio] writing to: {:?} (filename {} bytes)", filepath, truncated.len());
 
     let client = reqwest::Client::new();
     let resp = client.get(&url).send().await

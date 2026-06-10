@@ -200,14 +200,14 @@ impl BiliClient {
 
             self.download_stream(&best.base_url, &temp).await?;
 
-            // Build split segments
-            let safe_title = crate::bili::client::sanitize_filename(&info.title);
+            // Build split segments using make_download_filename for safety
             let segments: Vec<ffmpeg::SplitSegment> = player.view_points.iter().map(|vp| {
-                let safe_chapter = crate::bili::client::sanitize_filename(&vp.content);
                 ffmpeg::SplitSegment {
                     start: vp.from,
                     end: vp.to,
-                    output_path: download_dir.join(format!("{} - {}.m4a", safe_title, safe_chapter))
+                    output_path: download_dir.join(
+                        make_download_filename(&info.title, Some(&vp.content), "m4a")
+                    )
                         .to_string_lossy().to_string(),
                 }
             }).collect();
@@ -269,12 +269,10 @@ impl BiliClient {
         let best = select_best_audio(&dash.audio, has_session, is_premium)
             .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
 
-        let safe_title = sanitize_filename(&info.title);
-        let safe_part = sanitize_filename(&page_info.part);
         let filename = if info.pages.len() > 1 {
-            format!("{} - {}.m4a", safe_title, safe_part)
+            make_download_filename(&info.title, Some(&page_info.part), "m4a")
         } else {
-            format!("{}.m4a", safe_title)
+            make_download_filename(&info.title, None, "m4a")
         };
         let filepath = download_dir.join(&filename);
 
@@ -426,6 +424,37 @@ fn sanitize_filename(name: &str) -> String {
     }
 
     safe
+}
+
+/// Build a safe filename for downloading. Sanitizes special chars and truncates.
+/// This is the canonical entry point for all download filenames.
+fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String {
+    let safe_title = sanitize_filename(title);
+    let filename = match part {
+        Some(p) => {
+            let safe_part = sanitize_filename(p);
+            format!("{} - {}.{}", safe_title, safe_part, ext)
+        }
+        None => format!("{}.{}", safe_title, ext),
+    };
+    // Final safety: ensure the full filename component is under 255 bytes
+    if filename.len() > 200 {
+        // Truncate from the base title, keeping part and extension
+        let max_title_bytes = 200usize.saturating_sub(
+            part.map(|p| sanitize_filename(p).len() + 5).unwrap_or(5) + ext.len() + 1
+        );
+        let mut truncated_title = String::new();
+        for c in safe_title.chars() {
+            if truncated_title.len() + c.len_utf8() > max_title_bytes { break; }
+            truncated_title.push(c);
+        }
+        match part {
+            Some(p) => format!("{} - {}.{}", truncated_title, sanitize_filename(p), ext),
+            None => format!("{}.{}", truncated_title, ext),
+        }
+    } else {
+        filename
+    }
 }
 
 #[cfg(test)]

@@ -4,10 +4,11 @@ import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, 
 import { tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
 import { usePlayer } from "@/lib/player-context";
-import type { ContentItem, SearchResult } from "@/types/source";
+import type { ContentItem, SearchResult, YoutubeExtractionResult } from "@/types/source";
 import type { ExtractionResult, AudioSegment } from "@/lib/tauri";
 
 const BILI_URL_RE = /(?:bilibili\.com\/video\/BV|b23\.tv\/|space\.bilibili\.com\/.*collectiondetail)/i;
+const YOUTUBE_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/i;
 
 const SOURCE_TAB_ALL = "__all__";
 
@@ -18,10 +19,14 @@ export function SearchPage() {
   const [activeTab, setActiveTab] = useState(SOURCE_TAB_ALL);
   const savedSearch = useRef(false);
 
-  // Bilibili extraction state
+  // URL detection
   const isBiliUrl = BILI_URL_RE.test(query);
+  const isYoutubeUrl = YOUTUBE_URL_RE.test(query);
+  const isExtractableUrl = isBiliUrl || isYoutubeUrl;
+
+  // Extraction state (shared between Bilibili and YouTube)
   const [extracting, setExtracting] = useState(false);
-  const [extractionResult, setExtractionResult] = useState<ExtractionResult | null>(null);
+  const [extractionResult, setExtractionResult] = useState<ExtractionResult | YoutubeExtractionResult | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
 
   const { data: sources } = useQuery({
@@ -83,6 +88,8 @@ export function SearchPage() {
     e.preventDefault();
     if (isBiliUrl) {
       handleBiliExtract();
+    } else if (isYoutubeUrl) {
+      handleYoutubeExtract();
     } else if (query.trim()) {
       setSearchTerm(query.trim());
       setShowHistory(false);
@@ -96,6 +103,21 @@ export function SearchPage() {
     setSearchTerm(""); // clear normal search
     try {
       const result = await tauri.biliExtractAudio({ url: query.trim() });
+      setExtractionResult(result);
+    } catch (e) {
+      setExtractionError(String(e));
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  async function handleYoutubeExtract() {
+    setExtracting(true);
+    setExtractionError(null);
+    setExtractionResult(null);
+    setSearchTerm("");
+    try {
+      const result = await tauri.youtubeExtractAudio({ url: query.trim() });
       setExtractionResult(result);
     } catch (e) {
       setExtractionError(String(e));
@@ -216,10 +238,10 @@ export function SearchPage() {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Extracting...
               </span>
-            ) : isBiliUrl ? (
+            ) : isExtractableUrl ? (
               <span className="inline-flex items-center gap-1.5">
                 <Music className="h-3.5 w-3.5" />
-                Extract Audio
+                {isYoutubeUrl ? "YouTube Audio" : "Extract Audio"}
               </span>
             ) : (
               "Search"
@@ -260,9 +282,12 @@ export function SearchPage() {
       )}
 
       <div className="flex-1 overflow-y-auto p-6">
-        {/* Bilibili extraction results */}
-        {extractionResult && (
-          <BiliExtractionResult result={extractionResult} />
+        {/* Extraction results (Bilibili / YouTube) */}
+        {extractionResult && 'extractionType' in extractionResult && (
+          <BiliExtractionResult result={extractionResult as ExtractionResult} />
+        )}
+        {extractionResult && 'hasChapters' in extractionResult && !('extractionType' in extractionResult) && (
+          <YoutubeExtractionResult result={extractionResult as YoutubeExtractionResult} />
         )}
         {extractionError && (
           <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
@@ -568,7 +593,8 @@ function BiliExtractionResult({ result }: { result: ExtractionResult }) {
   async function handleDownloadSegment(seg: AudioSegment) {
     setDownloading(seg.title);
     try {
-      const safeName = `${result.videoTitle} - ${seg.title}`.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
+      const rawName = `${result.videoTitle} - ${seg.title}`;
+      const safeName = rawName.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
       await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.m4a` });
     } catch (e) {
       console.error("Download failed:", e);
@@ -610,6 +636,111 @@ function BiliExtractionResult({ result }: { result: ExtractionResult }) {
               </span>
               <span className="text-xs text-muted-foreground">
                 {seg.quality}K
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handlePlaySegment(seg)}
+                className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-primary"
+                title="Play"
+              >
+                <Play className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => handleDownloadSegment(seg)}
+                disabled={downloading === seg.title}
+                className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-primary disabled:opacity-50"
+                title="Download"
+              >
+                {downloading === seg.title ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function YoutubeExtractionResult({ result }: { result: YoutubeExtractionResult }) {
+  const player = usePlayer();
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  async function handlePlaySegment(seg: YoutubeExtractionResult['segments'][0]) {
+    if (seg.filePath) {
+      // Use the local file path for playback
+      player.play({
+        sourceId: "youtube",
+        title: `${result.videoTitle} - ${seg.title}`,
+        url: result.videoUrl,
+        imageUrl: result.thumbnailUrl ?? undefined,
+        audioUrl: seg.audioUrl,
+        duration: Math.round(seg.duration),
+      });
+    }
+  }
+
+  async function handleDownloadSegment(seg: YoutubeExtractionResult['segments'][0]) {
+    setDownloading(seg.title);
+    try {
+      const safeName = `${result.videoTitle} - ${seg.title}`.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
+      await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.${seg.ext}` });
+    } catch (e) {
+      console.error("Download failed:", e);
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  function formatDuration(seconds: number): string {
+    if (!seconds) return "";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        {result.thumbnailUrl && (
+          <img
+            src={result.thumbnailUrl}
+            alt={result.videoTitle}
+            className="h-10 w-10 rounded object-cover"
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <h3 className="font-medium truncate">{result.videoTitle}</h3>
+          <p className="text-xs text-muted-foreground truncate">{result.videoUrl}</p>
+        </div>
+        <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400 ring-1 ring-red-500/30">
+          YouTube
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {formatDuration(result.duration)}
+        </span>
+        {result.hasChapters && (
+          <span className="text-xs text-muted-foreground">Has chapters</span>
+        )}
+      </div>
+      <div className="space-y-2">
+        {result.segments.map((seg, i) => (
+          <div
+            key={i}
+            className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-muted-foreground tabular-nums w-6">{i + 1}</span>
+              <span className="text-sm truncate">{seg.title}</span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {formatDuration(seg.duration)}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                .{seg.ext}
               </span>
             </div>
             <div className="flex items-center gap-1">
