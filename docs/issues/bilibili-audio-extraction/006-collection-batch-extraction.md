@@ -23,7 +23,7 @@ Handle Bilibili collection URLs (合集/ugc_season). When the user pastes a coll
 
 - [x] Collection URL is correctly parsed and recognized
 - [x] All videos in a collection are enumerated (handles pagination)
-- [ ] Each video's audio is extracted to a separate file in a collection-named subfolder
+- [x] Each video's audio is extracted to a separate file in a collection-named subfolder
 - [x] Progress is reported to frontend (current/total)
 - [x] Cancel button stops extraction mid-way
 - [x] Files named: `Downloads/yadig/{collection_title}/{episode_title}.m4a`
@@ -35,6 +35,7 @@ Handle Bilibili collection URLs (合集/ugc_season). When the user pastes a coll
 - Collection archive enumeration now paginates `/x/polymer/web-space/seasons_archives_list` using `page_num`/`page_size`, merging page archives until `meta.total` is reached or an empty page is returned.
 - Pagination URL construction, stop conditions, and page merging are covered by `src-tauri/src/bili/client.rs` unit tests.
 - Collection extraction now passes archive episode titles into the downloader, so files are created under the sanitized collection-title directory with sanitized episode-title filenames.
+- Collection output path construction is covered by `collection_episode_output_path_uses_collection_subfolder`, which verifies sanitized `{collection_title}/{episode_title}.m4a` paths.
 - Collection extraction emits `bili://collection-progress` events with `jobId`, `completed`, `total`, `currentTitle`, and `cancelled`; the Search page filters events by the active job and shows a progress bar.
 - The Search page can request cancellation via `bili_cancel_extraction`. Cancellation is cooperative: the current episode download is allowed to finish, and remaining collection episodes are skipped.
 

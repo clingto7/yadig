@@ -1023,8 +1023,6 @@ impl BiliClient {
         C: Fn() -> bool,
     {
         let season = self.season_archives(mid, season_id).await?;
-        let safe_title = sanitize_filename(&season.meta.name);
-        let collection_dir = download_dir.join(&safe_title);
         let total = season.archives.len();
 
         let mut segments = Vec::new();
@@ -1055,13 +1053,21 @@ impl BiliClient {
                 .pages
                 .first()
                 .ok_or_else(|| YadigError::NotFound(format!("No pages in {}", archive.bvid)))?;
+            let output_path =
+                collection_episode_output_path(download_dir, &season.meta.name, &archive.title);
+            let episode_dir = output_path.parent().unwrap_or(download_dir);
+            let episode_filename = output_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("episode.m4a")
+                .to_string();
 
             match self
                 .download_page_audio_to_file(
                     &info,
                     page_info,
-                    &collection_dir,
-                    make_collection_episode_filename(&archive.title),
+                    episode_dir,
+                    episode_filename,
                     archive.title.clone(),
                 )
                 .await
@@ -1249,6 +1255,16 @@ fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String 
 
 fn make_collection_episode_filename(title: &str) -> String {
     make_download_filename(title, None, "m4a")
+}
+
+fn collection_episode_output_path(
+    download_dir: &std::path::Path,
+    collection_title: &str,
+    episode_title: &str,
+) -> std::path::PathBuf {
+    download_dir
+        .join(sanitize_filename(collection_title))
+        .join(make_collection_episode_filename(episode_title))
 }
 
 fn season_archives_page_url(mid: i64, season_id: i64, page_num: u32, page_size: u32) -> String {
@@ -1594,6 +1610,20 @@ mod tests {
         let filename = make_collection_episode_filename("Episode: 01/Intro");
 
         assert_eq!(filename, "Episode_ 01_Intro.m4a");
+    }
+
+    #[test]
+    fn collection_episode_output_path_uses_collection_subfolder() {
+        let path = collection_episode_output_path(
+            std::path::Path::new("/downloads/yadig"),
+            "Collection: City/Pop",
+            "Episode: 01/Intro",
+        );
+
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/downloads/yadig/Collection_ City_Pop/Episode_ 01_Intro.m4a")
+        );
     }
 
     #[test]
