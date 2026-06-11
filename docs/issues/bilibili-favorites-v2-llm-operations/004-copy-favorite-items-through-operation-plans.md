@@ -26,7 +26,12 @@ Copy should reuse the safety model already established for move/delete: complete
 - [x] Copy results appear in favorite operation history with per-item status and sanitized errors.
 - [x] Rust tests cover copy plan validation, form construction, batching, same-folder skip, existing-target skip, stop-on-blocked behavior, and local membership update semantics.
 - [x] TypeScript compilation, Rust tests, and production build pass.
-- [ ] Manual smoke test copies one or two videos between disposable folders and confirms both source and target membership on Bilibili Web.
+- [x] Manual smoke test copies one or two videos between disposable folders and confirms both source and target membership on Bilibili Web.
+
+## Notes
+
+- Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- The 2026-06-11 smoke test copied public test video `BV13U7k6HEjK` into a disposable target folder and confirmed target `media_count: 1` through Bilibili Web API state.
 
 ## Blocked by
 

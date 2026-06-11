@@ -23,7 +23,12 @@ If required metadata is missing or stale, the app should ask the user to resync 
 - [x] Failed or blocked rename leaves local title unchanged unless a later sync proves the remote title changed.
 - [x] Rust tests cover edit form construction, metadata preservation, mutation eligibility, stale metadata blocking, and sanitized errors.
 - [x] TypeScript compilation, Rust tests, and production build pass.
-- [ ] Manual smoke test renames a disposable folder and confirms it on Bilibili Web.
+- [x] Manual smoke test renames a disposable folder and confirms it on Bilibili Web.
+
+## Notes
+
+- Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- The 2026-06-11 smoke test renamed disposable folder `ydg2a0611` to `ydg2ar0611` and confirmed remote visibility through Bilibili Web API state.
 
 ## Blocked by
 

@@ -22,7 +22,12 @@ This slice establishes folder operation plans and history for non-resource opera
 - [x] Failed or blocked creation does not create a misleading local collection.
 - [x] Rust tests cover create-folder form construction, write-session requirement, sanitized errors, and plan/history serialization.
 - [x] TypeScript compilation, Rust tests, and production build pass.
-- [ ] Manual smoke test creates a disposable folder and confirms it on Bilibili Web.
+- [x] Manual smoke test creates a disposable folder and confirms it on Bilibili Web.
+
+## Notes
+
+- Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- The 2026-06-11 smoke test created disposable folder `ydg2a0611` and confirmed remote visibility through Bilibili Web API state.
 
 ## Blocked by
 

@@ -26,8 +26,14 @@ Successful deletion should remove the local collection and memberships while pre
 - [x] Failed or blocked deletion leaves local collection and memberships intact.
 - [x] Rust tests cover delete form construction, typed confirmation, non-empty impact metadata, mutation eligibility, local cleanup semantics, and secret redaction.
 - [x] TypeScript compilation, Rust tests, and production build pass.
-- [ ] Manual smoke test deletes an empty disposable folder.
-- [ ] Manual smoke test deletes a non-empty disposable folder with test videos and confirms the remote state on Bilibili Web.
+- [x] Manual smoke test deletes an empty disposable folder.
+- [x] Manual smoke test deletes a non-empty disposable folder with test videos and confirms the remote state on Bilibili Web.
+
+## Notes
+
+- Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- The 2026-06-11 smoke test deleted empty disposable folder `ydg3a0611` and non-empty disposable folder `ydg3c0611`, then confirmed both were absent through Bilibili Web API state.
+- The smoke test exposed the delete endpoint field name `media_ids`, which was fixed in `src-tauri/src/bili/client.rs`.
 
 ## Blocked by
 
