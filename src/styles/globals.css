@@ -53,6 +53,7 @@ body {
   font-family: system-ui, -apple-system, sans-serif;
 }
 
+input[type="checkbox"],
 .yadig-checkbox {
   appearance: none;
   -webkit-appearance: none;
@@ -74,6 +75,7 @@ body {
     box-shadow 120ms ease;
 }
 
+input[type="checkbox"]::before,
 .yadig-checkbox::before {
   content: "";
   width: 0.55rem;
@@ -85,24 +87,29 @@ body {
   transition: transform 120ms ease;
 }
 
+input[type="checkbox"]:checked,
 .yadig-checkbox:checked {
   border-color: var(--color-primary);
   background-color: var(--color-primary);
 }
 
+input[type="checkbox"]:checked::before,
 .yadig-checkbox:checked::before {
   transform: scale(1);
 }
 
+input[type="checkbox"]:hover,
 .yadig-checkbox:hover {
   border-color: var(--color-primary);
 }
 
+input[type="checkbox"]:focus-visible,
 .yadig-checkbox:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--color-ring);
 }
 
+input[type="checkbox"]:disabled,
 .yadig-checkbox:disabled {
   cursor: not-allowed;
   opacity: 0.5;

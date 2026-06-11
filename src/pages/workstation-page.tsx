@@ -1355,7 +1355,7 @@ export function WorkstationPage() {
             </div>
 
             <div className="rounded-lg border border-border bg-card p-4">
-              <h3 className="font-semibold">Favorite Remote Draft</h3>
+              <h3 className="font-semibold">Favorite Remote Operations</h3>
               <div className="mt-3 space-y-3">
                 <div className="grid gap-2">
                   <label className="block text-sm text-muted-foreground">
@@ -1391,7 +1391,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
                   >
                     <FolderPlus className="h-4 w-4" />
-                    Create Folder Draft
+                    Preview Create Folder
                   </button>
                 </div>
                 <div className="grid gap-2 border-t border-border pt-3">
@@ -1434,7 +1434,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
                   >
                     <FolderPen className="h-4 w-4" />
-                    Rename Folder Draft
+                    Preview Rename Folder
                   </button>
                 </div>
                 <div className="grid gap-2 border-t border-border pt-3">
@@ -1474,7 +1474,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-destructive px-3 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
                   >
                     <Trash2 className="h-4 w-4" />
-                    Delete Folder Draft
+                    Preview Delete Folder
                   </button>
                 </div>
                 <label className="block text-sm text-muted-foreground">
@@ -1500,7 +1500,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
                   >
                     <CopyIcon className="h-4 w-4" />
-                    Copy Draft
+                    Preview Copy
                   </button>
                   <button
                     onClick={() => void createFavoritePlan("move")}
@@ -1508,7 +1508,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
                   >
                     <FolderInput className="h-4 w-4" />
-                    Move Draft
+                    Preview Move
                   </button>
                   <button
                     onClick={() => void createFavoritePlan("delete")}
@@ -1516,7 +1516,7 @@ export function WorkstationPage() {
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
                   >
                     <Trash2 className="h-4 w-4" />
-                    Delete Draft
+                    Preview Delete
                   </button>
                 </div>
                 {favoritePlanContextReady && (
@@ -1525,11 +1525,11 @@ export function WorkstationPage() {
                   </p>
                 )}
                 {plan && plan.kind !== "bili_batch_audio_extraction" && (
-                  <div className="rounded border border-border bg-secondary/30 p-3">
+                  <div className="rounded-md border border-primary/60 bg-primary/5 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-medium text-foreground">
-                          Current draft: {favoritePlanKindLabel(plan.kind)}
+                          Current remote operation: {favoritePlanKindLabel(plan.kind)}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                           {OPERATION_ITEM_STATUSES.filter((status) => (planStatusCounts.get(status) ?? 0) > 0).map((status) => (

@@ -568,10 +568,25 @@ pub struct FavoriteFolderDeletePlanRequest {
 
 fn rename_metadata_from_folder(raw_metadata: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "intro": raw_metadata.get("intro").cloned().unwrap_or(serde_json::Value::Null),
-        "privacy": raw_metadata.get("privacy").cloned().unwrap_or(serde_json::Value::Null),
+        "intro": raw_metadata
+            .get("intro")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::String(String::new())),
+        "privacy": raw_metadata
+            .get("privacy")
+            .cloned()
+            .or_else(|| favorite_folder_privacy_from_attr(raw_metadata))
+            .unwrap_or(serde_json::Value::Null),
         "cover": raw_metadata.get("cover").cloned().unwrap_or(serde_json::Value::Null),
     })
+}
+
+fn favorite_folder_privacy_from_attr(raw_metadata: &serde_json::Value) -> Option<serde_json::Value> {
+    let attr = raw_metadata
+        .get("attr")
+        .and_then(|value| value.as_i64().or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok())))?;
+    let privacy = attr & 1;
+    Some(serde_json::Value::Number(privacy.into()))
 }
 
 fn favorite_folder_mutation_blocker(
@@ -836,6 +851,56 @@ mod favorite_operation_plan_tests {
             item.metadata["cover"].as_str(),
             Some("https://i0.hdslb.com/cover.jpg")
         );
+    }
+
+    #[test]
+    fn builds_pending_folder_rename_with_synced_list_metadata() {
+        let folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "List synced folder".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "List synced folder",
+                "attr": 23,
+                "media_count": 2
+            }),
+        );
+
+        let plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder,
+                new_title: "Renamed folder".to_string(),
+            });
+
+        let item = &plan.items[0];
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.error, None);
+        assert_eq!(item.metadata["intro"].as_str(), Some(""));
+        assert_eq!(item.metadata["privacy"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn derives_public_folder_rename_privacy_from_synced_attr() {
+        let folder = LibraryCollection::from_bili_favorite_folder(
+            "301".to_string(),
+            "Public folder".to_string(),
+            serde_json::json!({
+                "id": 301,
+                "title": "Public folder",
+                "attr": 22,
+                "media_count": 2
+            }),
+        );
+
+        let plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder,
+                new_title: "Public renamed".to_string(),
+            });
+
+        let item = &plan.items[0];
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.metadata["privacy"].as_i64(), Some(0));
     }
 
     #[test]

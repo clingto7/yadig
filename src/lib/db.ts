@@ -21,12 +21,38 @@ import {
 } from "@/lib/operation-plan-history";
 
 let db: Database | null = null;
+let dbCompatibilityReady: Promise<void> | null = null;
 
 async function getDb(): Promise<Database> {
   if (!db) {
     db = await Database.load("sqlite:yadig.db");
   }
+  dbCompatibilityReady ??= ensureDatabaseCompatibility(db);
+  await dbCompatibilityReady;
   return db;
+}
+
+async function ensureDatabaseCompatibility(database: Database): Promise<void> {
+  await ensureColumns(database, "operation_plan_items", [
+    ["source_collection_external_id", "TEXT"],
+    ["source_collection_title", "TEXT"],
+    ["target_collection_external_id", "TEXT"],
+    ["target_collection_title", "TEXT"],
+    ["resource_id", "TEXT"],
+    ["resource_type", "TEXT"],
+    ["metadata_json", "TEXT NOT NULL DEFAULT '{}'"],
+  ]);
+}
+
+async function ensureColumns(database: Database, tableName: string, columns: [string, string][]): Promise<void> {
+  const rows = await database.select<{ name: string }[]>(`PRAGMA table_info(${tableName})`);
+  const existingColumns = new Set(rows.map((row) => row.name));
+  for (const [columnName, definition] of columns) {
+    if (!existingColumns.has(columnName)) {
+      await database.execute(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+      existingColumns.add(columnName);
+    }
+  }
 }
 
 // --- RSS Feeds ---
