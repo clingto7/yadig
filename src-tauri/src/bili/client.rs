@@ -1231,7 +1231,7 @@ fn favorite_folder_delete_form(
     request: &FavoriteFolderDeleteRequest,
 ) -> BTreeMap<String, String> {
     BTreeMap::from([
-        ("media_id".to_string(), request.media_id.clone()),
+        ("media_ids".to_string(), request.media_id.clone()),
         ("csrf".to_string(), session.bili_jct.clone()),
     ])
 }
@@ -1697,8 +1697,9 @@ mod tests {
 
         let form = favorite_folder_delete_form(&session, &request);
 
-        assert_eq!(form.get("media_id").map(String::as_str), Some("300"));
+        assert_eq!(form.get("media_ids").map(String::as_str), Some("300"));
         assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+        assert_eq!(form.get("media_id"), None);
         assert_eq!(form.get("mid"), None);
         assert_eq!(form.get("resources"), None);
     }

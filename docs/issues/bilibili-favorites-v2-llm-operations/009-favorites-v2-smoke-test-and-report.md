@@ -13,23 +13,23 @@ The report should cover LLM configuration testing, LLM classification provenance
 ## Acceptance criteria
 
 - [x] A manual smoke-test checklist exists before remote writes are executed.
-- [ ] Smoke test uses disposable folders and non-important public test videos only.
-- [ ] Smoke test verifies LLM provider connection without recording the API key.
-- [ ] Smoke test verifies LLM classification output or records a sanitized provider failure.
-- [ ] Smoke test creates a disposable folder and confirms remote visibility.
-- [ ] Smoke test renames a disposable folder and confirms remote visibility.
-- [ ] Smoke test copies one or two test videos and confirms source and target membership.
-- [ ] Smoke test deletes an empty disposable folder and confirms remote state.
-- [ ] Smoke test deletes a non-empty disposable folder with test videos and confirms remote state.
-- [ ] Smoke test verifies operation history for copy and folder operations.
-- [ ] Smoke test verifies raw Bilibili cookies, CSRF tokens, callback URLs, account identifiers, and LLM API keys do not appear in UI messages, operation history, logs, or report text.
+- [x] Smoke test uses disposable folders and non-important public test videos only.
+- [x] Smoke test verifies LLM provider connection without recording the API key.
+- [x] Smoke test verifies LLM classification output or records a sanitized provider failure.
+- [x] Smoke test creates a disposable folder and confirms remote visibility.
+- [x] Smoke test renames a disposable folder and confirms remote visibility.
+- [x] Smoke test copies one or two test videos and confirms source and target membership.
+- [x] Smoke test deletes an empty disposable folder and confirms remote state.
+- [x] Smoke test deletes a non-empty disposable folder with test videos and confirms remote state.
+- [x] Smoke test verifies operation history for copy and folder operations.
+- [x] Smoke test verifies raw Bilibili cookies, CSRF tokens, callback URLs, account identifiers, and LLM API keys do not appear in UI messages, operation history, logs, or report text.
 - [x] Final report is written under `docs/research/` and links back to the PRD and issue directory.
 - [x] `cargo test --manifest-path src-tauri/Cargo.toml`, `pnpm exec tsc --noEmit --project tsconfig.app.json --pretty false`, and `pnpm build` pass on the final implementation.
 
 ## Notes
 
-- Pre-flight checklist and local verification report: `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
-- Real remote Bilibili write checks remain unchecked until they are executed with disposable folders and test videos.
+- Final sanitized smoke-test report: `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- The smoke test exposed that Bilibili folder deletion expects `media_ids`; implementation was corrected from `media_id` to `media_ids`.
 
 ## Blocked by
 

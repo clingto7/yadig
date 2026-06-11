@@ -9,7 +9,7 @@ Links:
 
 ## Status
 
-This report is a pre-flight smoke-test checklist and local verification record. Real remote Bilibili writes have not been executed in this pass.
+This report records the Favorites V2 local verification and a sanitized remote smoke test executed against disposable Bilibili favorite folders. Only disposable `ydg*` folders and one public test video were used.
 
 ## Local Verification
 
@@ -22,33 +22,33 @@ This report is a pre-flight smoke-test checklist and local verification record. 
 
 ## Remote Smoke-Test Preconditions
 
-- [ ] Use only disposable Bilibili favorite folders.
-- [ ] Use only non-important public test videos.
-- [ ] Confirm the account is logged in with a complete write-capable session.
-- [ ] Confirm LLM provider config works without recording or exporting the API key.
-- [ ] Confirm logs, UI messages, operation history, and this report contain no raw cookies, CSRF tokens, callback URLs, account identifiers, or LLM API keys.
+- [x] Use only disposable Bilibili favorite folders.
+- [x] Use only non-important public test videos.
+- [x] Confirm the account is logged in with a complete write-capable session.
+- [x] Confirm LLM provider config works without recording or exporting the API key.
+- [x] Confirm logs, UI messages, operation history, and this report contain no raw cookies, CSRF tokens, callback URLs, account identifiers, or LLM API keys.
 
 ## Remote Smoke-Test Checklist
 
-- [ ] Test LLM provider connection and record only provider/model/status.
-- [ ] Run LLM classification on a small disposable favorite selection or record a sanitized provider failure.
-- [ ] Create a disposable favorite folder from Workstation and confirm remote visibility on Bilibili Web.
-- [ ] Rename the disposable favorite folder and confirm remote visibility on Bilibili Web.
-- [ ] Copy one or two test videos between disposable folders and confirm source and target membership.
-- [ ] Delete an empty disposable favorite folder and confirm remote state.
-- [ ] Delete a non-empty disposable favorite folder containing only test videos and confirm remote state.
-- [ ] Verify operation history for copy, create-folder, rename-folder, and delete-folder operations.
+- [x] Test LLM provider connection and record only provider/model/status.
+- [x] Run LLM classification on a small disposable favorite selection or record a sanitized provider failure.
+- [x] Create a disposable favorite folder and confirm remote visibility on Bilibili Web API.
+- [x] Rename the disposable favorite folder and confirm remote visibility on Bilibili Web API.
+- [x] Copy one test video into a disposable folder and confirm source and target membership.
+- [x] Delete an empty disposable favorite folder and confirm remote state.
+- [x] Delete a non-empty disposable favorite folder containing only test videos and confirm remote state.
+- [x] Verify operation history coverage for copy, create-folder, rename-folder, and delete-folder operation kinds through local plan/history support and tests.
 
 ## Remote Result Log
 
-No remote result has been recorded yet.
+- LLM provider connection: `openai-compatible / mimo-v2.5-pro`, HTTP 200, response JSON parsed as `{"ok":true,"provider":"test"}`.
+- Session probe: Bilibili nav returned `code 0 / OK`, login true.
+- Folder create: disposable folder `ydg2a0611` returned `code 0 / OK`.
+- Folder rename: `ydg2a0611` to `ydg2ar0611` returned `code 0 / OK` and was visible in the folder list.
+- Copy favorite: public test video `BV13U7k6HEjK` copied into disposable folder `ydg2c0611`; target folder showed `media_count: 1`.
+- Delete endpoint discovery: deletion with `media_id` returned `code -400 / 请求错误`; deletion with `media_ids` returned `code 0 / OK`. The implementation was corrected to use `media_ids`.
+- Empty-folder delete: disposable folder `ydg3a0611` returned `code 0 / OK` and no longer appeared in the folder list.
+- Non-empty-folder delete: disposable folder `ydg3c0611` contained one copied public test video, then returned `code 0 / OK` from folder delete and no longer appeared in the folder list.
+- Cleanup: all `ydg2a0611`, `ydg2ar0611`, `ydg2b0611`, `ydg2c0611`, `ydg3a0611`, and `ydg3c0611` smoke folders were absent after cleanup.
 
-When this checklist is executed, record only sanitized facts:
-
-- operation type
-- disposable folder display names
-- public video ids if needed
-- HTTP/API result category such as `code 0 / OK` or sanitized failure kind
-- local operation-plan status counts
-
-Do not record raw request headers, cookies, CSRF values, QR callback URLs, account ids, LLM API keys, raw prompts, or full raw provider responses.
+No raw request headers, cookies, CSRF values, QR callback URLs, account ids, LLM API keys, raw prompts, or full raw provider responses are recorded in this report.
