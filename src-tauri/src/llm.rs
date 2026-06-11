@@ -343,11 +343,52 @@ fn normalize_suggested_action(action: Option<LlmSuggestedAction>) -> Option<LlmS
 
 fn classification_metadata(item: &LibraryItem) -> serde_json::Value {
     let mut metadata = serde_json::Map::new();
-    for key in ["tid", "tname", "duration", "pubdate", "favTime"] {
+    for key in [
+        "tid", "tname", "duration", "pubdate", "pubtime", "favTime", "fav_time", "intro", "desc",
+    ] {
         if let Some(value) = item.raw_metadata.get(key) {
             if value.is_string() || value.is_number() || value.is_boolean() {
                 metadata.insert(key.to_string(), value.clone());
             }
+        }
+    }
+
+    if let Some(value) = item
+        .raw_metadata
+        .get("collection")
+        .and_then(|collection| collection.get("title"))
+    {
+        if value.is_string() {
+            metadata.insert("favoriteFolderTitle".to_string(), value.clone());
+        }
+    }
+
+    if let Some(value) = item
+        .raw_metadata
+        .get("upper")
+        .and_then(|upper| upper.get("name"))
+        .or_else(|| {
+            item.raw_metadata
+                .get("owner")
+                .and_then(|owner| owner.get("name"))
+        })
+    {
+        if value.is_string() {
+            metadata.insert("uploaderName".to_string(), value.clone());
+        }
+    }
+
+    if let Some(cnt_info) = item.raw_metadata.get("cnt_info") {
+        let mut counters = serde_json::Map::new();
+        for key in ["play", "collect", "danmaku"] {
+            if let Some(value) = cnt_info.get(key) {
+                if value.is_number() {
+                    counters.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        if !counters.is_empty() {
+            metadata.insert("counts".to_string(), serde_json::Value::Object(counters));
         }
     }
 
@@ -454,11 +495,11 @@ pub fn build_openai_compatible_payload(
 pub fn build_classification_payload(
     model: &str,
     request: &LlmClassifyItemsRequest,
+    include_response_format: bool,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": model,
         "temperature": 0.2,
-        "response_format": { "type": "json_object" },
         "messages": [
             {
                 "role": "system",
@@ -469,7 +510,13 @@ pub fn build_classification_payload(
                 "content": build_classification_prompt(request)
             }
         ]
-    })
+    });
+
+    if include_response_format {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+
+    payload
 }
 
 pub fn chunk_classification_items(
@@ -818,6 +865,21 @@ async fn call_openai_compatible_classification(
     request: &LlmClassifyItemsRequest,
     analysis_at: &str,
 ) -> Result<LlmClassificationResponse> {
+    match call_openai_compatible_classification_once(provider, request, analysis_at, true).await {
+        Ok(response) => Ok(response),
+        Err(err) if err.to_string().contains("response_format") => {
+            call_openai_compatible_classification_once(provider, request, analysis_at, false).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn call_openai_compatible_classification_once(
+    provider: &LlmProviderConfig,
+    request: &LlmClassifyItemsRequest,
+    analysis_at: &str,
+    include_response_format: bool,
+) -> Result<LlmClassificationResponse> {
     let api_key = provider.api_key.as_deref().unwrap_or("").trim();
     if api_key.is_empty() {
         return Err(YadigError::Network("LLM API key is required".into()));
@@ -830,7 +892,7 @@ async fn call_openai_compatible_classification(
         .unwrap_or("https://api.openai.com/v1")
         .trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
-    let payload = build_classification_payload(&provider.model, request);
+    let payload = build_classification_payload(&provider.model, request, include_response_format);
     let client = crate::http_client::build_client("yadig/0.1.0");
     let response = client
         .post(&url)
@@ -980,6 +1042,78 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("json_object"));
+    }
+
+    #[test]
+    fn classification_payload_includes_favorite_specific_metadata() {
+        let request = LlmClassifyItemsRequest {
+            instruction: "分类".to_string(),
+            provider: None,
+            mode: LlmClassificationMode::Llm,
+            items: vec![LibraryItem::from_bili_video(
+                BiliResourceKind::FavoriteVideo,
+                "BV1fav".to_string(),
+                "调色教程｜ 达芬奇20一键AI混音".to_string(),
+                Some("胡子哥拍视频".to_string()),
+                serde_json::json!({
+                    "intro": "达芬奇20更新的AI混音工具，真的太夸张了",
+                    "duration": 150,
+                    "pubtime": 1780674822,
+                    "fav_time": 1781048605,
+                    "collection": {
+                        "id": 2468177091_i64,
+                        "title": "默认收藏夹"
+                    },
+                    "upper": {
+                        "mid": 346326559,
+                        "name": "胡子哥拍视频"
+                    },
+                    "cnt_info": {
+                        "play": 7252,
+                        "collect": 752,
+                        "danmaku": 4
+                    },
+                    "favorite": {
+                        "resourceId": "116698288035540",
+                        "resourceType": "2"
+                    }
+                }),
+            )],
+        };
+
+        let prompt = build_classification_prompt(&request);
+
+        assert!(prompt.contains("达芬奇20更新的AI混音工具"));
+        assert!(prompt.contains("胡子哥拍视频"));
+        assert!(prompt.contains("默认收藏夹"));
+        assert!(prompt.contains("play"));
+        assert!(!prompt.contains("resourceId"));
+        assert!(!prompt.contains("346326559"));
+    }
+
+    #[test]
+    fn classification_payload_can_omit_response_format_for_compatible_fallback() {
+        let request = LlmClassifyItemsRequest {
+            instruction: "分类".to_string(),
+            provider: None,
+            mode: LlmClassificationMode::Llm,
+            items: vec![LibraryItem::from_bili_video(
+                BiliResourceKind::FavoriteVideo,
+                "BV1abc".to_string(),
+                "音乐视频".to_string(),
+                None,
+                serde_json::json!({ "tname": "音乐" }),
+            )],
+        };
+
+        let strict = build_classification_payload("mimo-v2.5-pro", &request, true);
+        let prompt_only = build_classification_payload("mimo-v2.5-pro", &request, false);
+
+        assert_eq!(
+            strict["response_format"]["type"].as_str(),
+            Some("json_object")
+        );
+        assert!(prompt_only.get("response_format").is_none());
     }
 
     #[test]
