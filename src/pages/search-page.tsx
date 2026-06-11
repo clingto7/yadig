@@ -3,7 +3,9 @@ import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music, CircleAlert } from "lucide-react";
 import { tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
+import { notifyDownloadSaved } from "@/lib/download-notification";
 import { usePlayer } from "@/lib/player-context";
+import { isBiliExtractableUrl, isYoutubeExtractableUrl } from "@/lib/search-url-detection";
 import {
   buildBiliBatchDownloadState,
   getBiliSavedFolderPath,
@@ -11,9 +13,6 @@ import {
 } from "@/lib/bili-extraction-ui";
 import type { ContentItem, SearchResult, YoutubeExtractionResult } from "@/types/source";
 import type { ExtractionResult, AudioSegment } from "@/lib/tauri";
-
-const BILI_URL_RE = /(?:bilibili\.com\/video\/BV|b23\.tv\/|space\.bilibili\.com\/.*collectiondetail)/i;
-const YOUTUBE_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/i;
 
 const SOURCE_TAB_ALL = "__all__";
 
@@ -25,8 +24,8 @@ export function SearchPage() {
   const savedSearch = useRef(false);
 
   // URL detection
-  const isBiliUrl = BILI_URL_RE.test(query);
-  const isYoutubeUrl = YOUTUBE_URL_RE.test(query);
+  const isBiliUrl = isBiliExtractableUrl(query);
+  const isYoutubeUrl = isYoutubeExtractableUrl(query);
   const isExtractableUrl = isBiliUrl || isYoutubeUrl;
 
   // Extraction state (shared between Bilibili and YouTube)
@@ -382,6 +381,7 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
       const safeName = item.title.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
       const filename = `${safeName}.${ext}`;
       const path = await tauri.downloadAudio({ url: item.downloadUrl, filename });
+      await notifyDownloadSaved(path);
       console.log("Downloaded to:", path);
     } catch (err) {
       console.error("Download failed:", err);
@@ -607,9 +607,11 @@ function BiliExtractionResult({ result }: { result: ExtractionResult }) {
   async function downloadSegment(seg: AudioSegment) {
     if (seg.filePath) {
       await tauri.openPath({ path: seg.filePath });
+      await notifyDownloadSaved(seg.filePath);
       return;
     }
-    await tauri.downloadAudio({ url: seg.audioUrl, filename: segmentFilename(seg) });
+    const path = await tauri.downloadAudio({ url: seg.audioUrl, filename: segmentFilename(seg) });
+    await notifyDownloadSaved(path);
   }
 
   async function handleDownloadSegment(seg: AudioSegment) {
@@ -756,7 +758,8 @@ function YoutubeExtractionResult({ result }: { result: YoutubeExtractionResult }
     setDownloading(seg.title);
     try {
       const safeName = `${result.videoTitle} - ${seg.title}`.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
-      await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.${seg.ext}` });
+      const path = await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.${seg.ext}` });
+      await notifyDownloadSaved(path);
     } catch (e) {
       console.error("Download failed:", e);
     } finally {
