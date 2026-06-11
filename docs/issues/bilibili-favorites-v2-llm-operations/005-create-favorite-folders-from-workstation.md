@@ -12,16 +12,16 @@ This slice establishes folder operation plans and history for non-resource opera
 
 ## Acceptance criteria
 
-- [ ] Workstation exposes a create-folder action with title, optional introduction, and privacy setting.
-- [ ] Blank or invalid titles are rejected before execution.
-- [ ] Folder creation requires a complete Bilibili write session.
-- [ ] The backend sends the Bilibili favorite folder add request with title, introduction, privacy, and CSRF token.
-- [ ] User sees a preview before execution and must explicitly confirm.
-- [ ] Successful creation refreshes local favorite-folder collections and makes the new folder available as a copy/move target.
-- [ ] Folder creation appears in operation history with status, title, remote folder id when known, and sanitized errors.
-- [ ] Failed or blocked creation does not create a misleading local collection.
-- [ ] Rust tests cover create-folder form construction, write-session requirement, sanitized errors, and plan/history serialization.
-- [ ] TypeScript compilation, Rust tests, and production build pass.
+- [x] Workstation exposes a create-folder action with title, optional introduction, and privacy setting.
+- [x] Blank or invalid titles are rejected before execution.
+- [x] Folder creation requires a complete Bilibili write session.
+- [x] The backend sends the Bilibili favorite folder add request with title, introduction, privacy, and CSRF token.
+- [x] User sees a preview before execution and must explicitly confirm.
+- [x] Successful creation refreshes local favorite-folder collections and makes the new folder available as a copy/move target.
+- [x] Folder creation appears in operation history with status, title, remote folder id when known, and sanitized errors.
+- [x] Failed or blocked creation does not create a misleading local collection.
+- [x] Rust tests cover create-folder form construction, write-session requirement, sanitized errors, and plan/history serialization.
+- [x] TypeScript compilation, Rust tests, and production build pass.
 - [ ] Manual smoke test creates a disposable folder and confirms it on Bilibili Web.
 
 ## Blocked by

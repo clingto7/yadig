@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
-import { Brain, Clock3, Copy as CopyIcon, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
+import { Brain, Clock3, Copy as CopyIcon, Download, FolderInput, FolderPlus, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
   buildClassificationProgress,
   chunkClassificationItems,
@@ -20,6 +20,7 @@ import {
 import { CHECKBOX_CLASS_NAME } from "@/lib/ui-style";
 import {
   tauri,
+  type FavoriteFolderPrivacy,
   type FavoriteOperationAction,
   type LibraryCollection,
   type LibraryItem,
@@ -39,6 +40,7 @@ import {
   updateBiliFavoriteCopyMemberships,
   updateBiliFavoriteDeleteMemberships,
   updateBiliFavoriteMoveMemberships,
+  upsertBiliFavoriteFolderFromCreatePlan,
   upsertBiliSyncResult,
   type LibraryItemWithCollections,
   type OperationPlanHistoryEntry,
@@ -92,6 +94,8 @@ function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
       return "Move";
     case "bili_batch_delete":
       return "Delete";
+    case "bili_favorite_folder_create":
+      return "Create Folder";
   }
 }
 
@@ -106,9 +110,15 @@ function operationActionLabel(action: string) {
     case "delete":
     case "delete_favorite":
       return "Delete";
+    case "create_folder":
+      return "Create Folder";
     default:
       return action;
   }
+}
+
+function folderPrivacyLabel(value: string | null) {
+  return value === "1" ? "Private" : "Public";
 }
 
 function formatHistoryTime(value: string) {
@@ -146,6 +156,9 @@ export function WorkstationPage() {
   const [selectedFolderId, setSelectedFolderId] = useState<string>("all");
   const [selectedFavoriteIds, setSelectedFavoriteIds] = useState<Set<string>>(() => new Set());
   const [targetFolderId, setTargetFolderId] = useState<string>("");
+  const [folderCreateTitle, setFolderCreateTitle] = useState("");
+  const [folderCreateIntro, setFolderCreateIntro] = useState("");
+  const [folderCreatePrivacy, setFolderCreatePrivacy] = useState<FavoriteFolderPrivacy>("private");
   const [classifications, setClassifications] = useState<LlmClassificationItem[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
@@ -550,6 +563,37 @@ export function WorkstationPage() {
     }
   }
 
+  async function createFavoriteFolderCreatePlan() {
+    const title = folderCreateTitle.trim();
+    if (!title) {
+      setMessage("Favorite folder title is required.");
+      return;
+    }
+    if (title.length > 40) {
+      setMessage("Favorite folder title must be 40 characters or fewer.");
+      return;
+    }
+
+    setBusy("favorite-folder-create-plan");
+    setMessage(null);
+    try {
+      const nextPlan = await tauri.createBiliFavoriteFolderCreatePlan({
+        title,
+        intro: folderCreateIntro.trim(),
+        privacy: folderCreatePrivacy,
+      });
+      const savedPlanId = await saveOperationPlan(nextPlan);
+      await refreshOperationHistory(savedPlanId);
+      setPlan(nextPlan);
+      const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
+      setMessage(`Created folder draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder draft creation failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function executeAudioPlan() {
     if (!plan) return;
     const confirmed = window.confirm(
@@ -693,6 +737,42 @@ export function WorkstationPage() {
     }
   }
 
+  async function executeFavoriteFolderCreatePlan() {
+    if (!plan || plan.kind !== "bili_favorite_folder_create") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This folder create plan has no pending items to execute.");
+      return;
+    }
+    const folderTitle = plan.items[0]?.title ?? "favorite folder";
+    const confirmed = window.confirm(`Create Bilibili favorite folder "${folderTitle}"?`);
+    if (!confirmed) return;
+
+    setBusy("favorite-folder-create-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteFolderCreatePlan({ plan, confirmed: true });
+      await upsertBiliFavoriteFolderFromCreatePlan(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
+      const storedFolders = await listLibraryCollections("bili_favorite_folder");
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      const createdItem = result.plan.items.find((item) => item.status === "success");
+      if (createdItem?.targetCollectionExternalId) {
+        setTargetFolderId(createdItem.targetCollectionExternalId);
+      }
+      setFolderCreateTitle("");
+      setFolderCreateIntro("");
+      const successCount = result.plan.items.filter((item) => item.status === "success").length;
+      setMessage(`Created ${successCount}/${result.plan.items.length} favorite folders.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder creation failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-border p-6">
@@ -804,8 +884,45 @@ export function WorkstationPage() {
             <div className="rounded-lg border border-border bg-card p-4">
               <h3 className="font-semibold">Favorite Remote Draft</h3>
               <div className="mt-3 space-y-3">
+                <div className="grid gap-2">
+                  <label className="block text-sm text-muted-foreground">
+                    New folder title
+                    <input
+                      value={folderCreateTitle}
+                      onChange={(event) => setFolderCreateTitle(event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Introduction
+                    <input
+                      value={folderCreateIntro}
+                      onChange={(event) => setFolderCreateIntro(event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Privacy
+                    <select
+                      value={folderCreatePrivacy}
+                      onChange={(event) => setFolderCreatePrivacy(event.target.value as FavoriteFolderPrivacy)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="private">Private</option>
+                      <option value="public">Public</option>
+                    </select>
+                  </label>
+                  <button
+                    onClick={() => void createFavoriteFolderCreatePlan()}
+                    disabled={busy !== null}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                    Create Folder Draft
+                  </button>
+                </div>
                 <label className="block text-sm text-muted-foreground">
-                  Move target
+                  Copy or move target
                   <select
                     value={targetFolderId}
                     onChange={(event) => setTargetFolderId(event.target.value)}
@@ -962,8 +1079,10 @@ export function WorkstationPage() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         {operationActionLabel(item.action)}
                         {" · "}
-                        {item.sourceCollectionTitle ?? "Unknown source"}
-                        {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
+                        {item.action === "create_folder" ? folderPrivacyLabel(item.target) : item.sourceCollectionTitle ?? "Unknown source"}
+                        {item.action === "create_folder"
+                          ? item.targetCollectionTitle ? ` · ${item.targetCollectionTitle}` : ""
+                          : item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
                         {" · "}
                         {operationPlanItemStatusLabel(item.status)}
                       </div>
@@ -1001,6 +1120,16 @@ export function WorkstationPage() {
                   >
                     <Trash2 className="h-4 w-4" />
                     Execute Delete
+                  </button>
+                )}
+                {plan.kind === "bili_favorite_folder_create" && (
+                  <button
+                    onClick={() => void executeFavoriteFolderCreatePlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                    Execute Create Folder
                   </button>
                 )}
               </div>

@@ -133,6 +133,7 @@ pub enum OperationPlanKind {
     BiliBatchCopy,
     BiliBatchMove,
     BiliBatchDelete,
+    BiliFavoriteFolderCreate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -269,6 +270,43 @@ impl OperationPlan {
 
         Self { kind, items }
     }
+
+    pub fn for_bili_favorite_folder_create(request: FavoriteFolderCreatePlanRequest) -> Self {
+        let title = request.title.trim().to_string();
+        let intro = request.intro.trim().to_string();
+        let privacy = request.privacy.normalized_value();
+        let (status, error) = if title.is_empty() {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder title is required".to_string()),
+            )
+        } else if title.chars().count() > 40 {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder title must be 40 characters or fewer".to_string()),
+            )
+        } else {
+            (pending_status(), None)
+        };
+
+        Self {
+            kind: OperationPlanKind::BiliFavoriteFolderCreate,
+            items: vec![OperationPlanItem {
+                external_id: "pending".to_string(),
+                title,
+                action: "create_folder".to_string(),
+                target: Some(privacy.to_string()),
+                status,
+                error,
+                source_collection_external_id: None,
+                source_collection_title: None,
+                target_collection_external_id: None,
+                target_collection_title: if intro.is_empty() { None } else { Some(intro) },
+                resource_id: None,
+                resource_type: None,
+            }],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -346,6 +384,30 @@ pub struct FavoriteOperationPlanRequest {
     pub target_collection_external_id: Option<String>,
     pub target_collection_title: Option<String>,
     pub items: Vec<FavoriteOperationCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FavoriteFolderPrivacy {
+    Public,
+    Private,
+}
+
+impl FavoriteFolderPrivacy {
+    pub fn normalized_value(&self) -> i32 {
+        match self {
+            FavoriteFolderPrivacy::Public => 0,
+            FavoriteFolderPrivacy::Private => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteFolderCreatePlanRequest {
+    pub title: String,
+    pub intro: String,
+    pub privacy: FavoriteFolderPrivacy,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -460,6 +522,42 @@ mod favorite_operation_plan_tests {
         assert_eq!(
             item.error.as_deref(),
             Some("Item already has target favorite folder membership")
+        );
+    }
+
+    #[test]
+    fn builds_pending_folder_create_plan_for_valid_title() {
+        let plan =
+            OperationPlan::for_bili_favorite_folder_create(FavoriteFolderCreatePlanRequest {
+                title: "Disposable".to_string(),
+                intro: "Temporary test folder".to_string(),
+                privacy: FavoriteFolderPrivacy::Private,
+            });
+
+        assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderCreate);
+        let item = &plan.items[0];
+        assert_eq!(item.action, "create_folder");
+        assert_eq!(item.title, "Disposable");
+        assert_eq!(item.target.as_deref(), Some("1"));
+        assert_eq!(item.target_collection_title.as_deref(), Some("Temporary test folder"));
+        assert_eq!(item.status, "pending");
+    }
+
+    #[test]
+    fn blocks_folder_create_plan_for_blank_title() {
+        let plan =
+            OperationPlan::for_bili_favorite_folder_create(FavoriteFolderCreatePlanRequest {
+                title: "  ".to_string(),
+                intro: String::new(),
+                privacy: FavoriteFolderPrivacy::Public,
+            });
+
+        let item = &plan.items[0];
+        assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderCreate);
+        assert_eq!(item.status, "blocked");
+        assert_eq!(
+            item.error.as_deref(),
+            Some("Favorite folder title is required")
         );
     }
 

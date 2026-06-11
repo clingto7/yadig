@@ -1,12 +1,13 @@
 use crate::bili::auth::BiliAuth;
 use crate::bili::client::{
-    BiliClient, FavoriteDeleteBatch, FavoriteMoveBatch, FavoriteMoveResource, FavoriteWriteError,
-    FavoriteWriteErrorKind,
+    BiliClient, FavoriteDeleteBatch, FavoriteFolderCreateRequest, FavoriteMoveBatch,
+    FavoriteMoveResource, FavoriteWriteError, FavoriteWriteErrorKind,
 };
 use crate::error::{Result, YadigError};
 use crate::library::{
-    AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteOperationPlanRequest,
-    OperationPlan, OperationPlanItem, OperationPlanKind,
+    AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteFolderCreatePlanRequest,
+    FavoriteOperationPlanRequest, LibraryCollection, OperationPlan, OperationPlanItem,
+    OperationPlanKind,
 };
 use crate::llm::{
     analyze_items, classify_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
@@ -64,6 +65,13 @@ pub async fn create_bili_favorite_operation_plan(
     request: FavoriteOperationPlanRequest,
 ) -> Result<OperationPlan> {
     Ok(OperationPlan::for_bili_favorite_operation(request))
+}
+
+#[tauri::command]
+pub async fn create_bili_favorite_folder_create_plan(
+    request: FavoriteFolderCreatePlanRequest,
+) -> Result<OperationPlan> {
+    Ok(OperationPlan::for_bili_favorite_folder_create(request))
 }
 
 #[tauri::command]
@@ -183,6 +191,20 @@ pub async fn execute_bili_favorite_delete_plan(
             }
         },
     )
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_bili_favorite_folder_create_plan(
+    auth: State<'_, BiliAuth>,
+    plan: OperationPlan,
+    confirmed: bool,
+) -> Result<BiliFavoriteFolderCreateExecutionResult> {
+    let client = Arc::new(BiliClient::new((*auth).clone()));
+    execute_favorite_folder_create_plan_with_runner(plan, confirmed, move |request| {
+        let client = Arc::clone(&client);
+        async move { client.create_favorite_folder(&request).await }
+    })
     .await
 }
 
@@ -368,6 +390,59 @@ where
     }
 
     Ok(BiliFavoriteDeleteExecutionResult { plan, stopped })
+}
+
+async fn execute_favorite_folder_create_plan_with_runner<F, Fut>(
+    mut plan: OperationPlan,
+    confirmed: bool,
+    mut runner: F,
+) -> Result<BiliFavoriteFolderCreateExecutionResult>
+where
+    F: FnMut(FavoriteFolderCreateRequest) -> Fut,
+    Fut: Future<Output = std::result::Result<LibraryCollection, FavoriteWriteError>>,
+{
+    if plan.kind != OperationPlanKind::BiliFavoriteFolderCreate {
+        return Err(YadigError::Network(
+            "Only Bilibili favorite folder create plans can be executed by this command".into(),
+        ));
+    }
+    if !confirmed {
+        return Err(YadigError::Network(
+            "Bilibili favorite folder creation requires explicit confirmation".into(),
+        ));
+    }
+
+    for index in 0..plan.items.len() {
+        if plan.items[index].status != "pending" {
+            continue;
+        }
+
+        let Some(request) = favorite_folder_create_request_from_item(&plan.items[index]) else {
+            mark_plan_item(
+                &mut plan.items[index],
+                "blocked",
+                Some("Missing favorite folder title or privacy setting".to_string()),
+            );
+            continue;
+        };
+
+        match runner(request).await {
+            Ok(collection) => {
+                plan.items[index].external_id = collection.external_id.clone();
+                plan.items[index].target_collection_external_id = Some(collection.external_id);
+                mark_plan_item(&mut plan.items[index], "success", None);
+            }
+            Err(err) => {
+                let status = match err.kind {
+                    FavoriteWriteErrorKind::Failed => "failed",
+                    FavoriteWriteErrorKind::Blocked => "blocked",
+                };
+                mark_plan_item(&mut plan.items[index], status, Some(err.message));
+            }
+        }
+    }
+
+    Ok(BiliFavoriteFolderCreateExecutionResult { plan })
 }
 
 async fn flush_favorite_move_batch<F, Fut>(
@@ -583,6 +658,23 @@ fn non_empty(value: Option<&str>) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn favorite_folder_create_request_from_item(
+    item: &OperationPlanItem,
+) -> Option<FavoriteFolderCreateRequest> {
+    let title = non_empty(Some(&item.title))?;
+    let privacy = item.target.as_deref()?.trim().parse::<i32>().ok()?;
+    Some(FavoriteFolderCreateRequest {
+        title,
+        intro: item
+            .target_collection_title
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        privacy,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiliFavoriteMoveExecutionResult {
@@ -595,6 +687,12 @@ pub struct BiliFavoriteMoveExecutionResult {
 pub struct BiliFavoriteDeleteExecutionResult {
     pub plan: OperationPlan,
     pub stopped: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiliFavoriteFolderCreateExecutionResult {
+    pub plan: OperationPlan,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -848,6 +946,113 @@ mod favorite_copy_execution_tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Execution stopped"));
+    }
+}
+
+#[cfg(test)]
+mod favorite_folder_create_execution_tests {
+    use super::*;
+    use crate::bili::client::{FavoriteFolderCreateRequest, FavoriteWriteError, FavoriteWriteErrorKind};
+    use crate::library::OperationPlanItem;
+    use std::cell::RefCell;
+
+    fn create_plan() -> OperationPlan {
+        OperationPlan {
+            kind: OperationPlanKind::BiliFavoriteFolderCreate,
+            items: vec![OperationPlanItem {
+                external_id: "pending".to_string(),
+                title: "Disposable".to_string(),
+                action: "create_folder".to_string(),
+                target: Some("1".to_string()),
+                status: "pending".to_string(),
+                error: None,
+                source_collection_external_id: None,
+                source_collection_title: None,
+                target_collection_external_id: None,
+                target_collection_title: Some("Temporary test folder".to_string()),
+                resource_id: None,
+                resource_type: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn favorite_folder_create_execution_requires_explicit_confirmation() {
+        let calls = RefCell::new(Vec::<FavoriteFolderCreateRequest>::new());
+
+        let err = futures::executor::block_on(execute_favorite_folder_create_plan_with_runner(
+            create_plan(),
+            false,
+            |request| {
+                calls.borrow_mut().push(request);
+                async {
+                    Ok(LibraryCollection::from_bili_favorite_folder(
+                        "300".to_string(),
+                        "Disposable".to_string(),
+                        serde_json::json!({"id": 300, "title": "Disposable"}),
+                    ))
+                }
+            },
+        ))
+        .expect_err("confirmation is required");
+
+        assert!(err.to_string().contains("explicit confirmation"));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn favorite_folder_create_execution_marks_success_with_remote_id() {
+        let calls = RefCell::new(Vec::<FavoriteFolderCreateRequest>::new());
+
+        let result = futures::executor::block_on(execute_favorite_folder_create_plan_with_runner(
+            create_plan(),
+            true,
+            |request| {
+                calls.borrow_mut().push(request);
+                async {
+                    Ok(LibraryCollection::from_bili_favorite_folder(
+                        "300".to_string(),
+                        "Disposable".to_string(),
+                        serde_json::json!({"id": 300, "title": "Disposable"}),
+                    ))
+                }
+            },
+        ))
+        .expect("folder create execution should succeed");
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].title, "Disposable");
+        assert_eq!(calls[0].intro, "Temporary test folder");
+        assert_eq!(calls[0].privacy, 1);
+        assert_eq!(result.plan.items[0].status, "success");
+        assert_eq!(result.plan.items[0].external_id, "300");
+        assert_eq!(
+            result.plan.items[0].target_collection_external_id.as_deref(),
+            Some("300")
+        );
+    }
+
+    #[test]
+    fn favorite_folder_create_execution_marks_blocked_errors() {
+        let result = futures::executor::block_on(execute_favorite_folder_create_plan_with_runner(
+            create_plan(),
+            true,
+            |_request| async {
+                Err(FavoriteWriteError {
+                    kind: FavoriteWriteErrorKind::Blocked,
+                    message: "Bilibili favorite write blocked (-111): csrf failed".to_string(),
+                })
+            },
+        ))
+        .expect("blocked item status should be returned");
+
+        assert_eq!(result.plan.items[0].status, "blocked");
+        assert!(result.plan.items[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("csrf failed"));
     }
 }
 

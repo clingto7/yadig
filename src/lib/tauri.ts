@@ -192,11 +192,20 @@ export interface FavoriteOperationPlanRequest {
   items: FavoriteOperationCandidate[];
 }
 
+export type FavoriteFolderPrivacy = "public" | "private";
+
+export interface FavoriteFolderCreatePlanRequest {
+  title: string;
+  intro: string;
+  privacy: FavoriteFolderPrivacy;
+}
+
 export type OperationPlanKind =
   | "bili_batch_audio_extraction"
   | "bili_batch_copy"
   | "bili_batch_move"
-  | "bili_batch_delete";
+  | "bili_batch_delete"
+  | "bili_favorite_folder_create";
 
 export interface OperationPlanItem {
   externalId: string;
@@ -241,6 +250,10 @@ export interface BiliFavoriteCopyExecutionResult {
 export interface BiliFavoriteDeleteExecutionResult {
   plan: OperationPlan;
   stopped: boolean;
+}
+
+export interface BiliFavoriteFolderCreateExecutionResult {
+  plan: OperationPlan;
 }
 
 export const tauri = {
@@ -324,6 +337,9 @@ export const tauri = {
   createBiliFavoriteOperationPlan: (request: FavoriteOperationPlanRequest): Promise<OperationPlan> =>
     invoke("create_bili_favorite_operation_plan", { request }),
 
+  createBiliFavoriteFolderCreatePlan: (request: FavoriteFolderCreatePlanRequest): Promise<OperationPlan> =>
+    invoke("create_bili_favorite_folder_create_plan", { request }),
+
   executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
     invoke("execute_bili_audio_extraction_plan", params),
 
@@ -335,6 +351,9 @@ export const tauri = {
 
   executeBiliFavoriteDeletePlan: (params: { plan: OperationPlan; confirmationText: string }): Promise<BiliFavoriteDeleteExecutionResult> =>
     invoke("execute_bili_favorite_delete_plan", params),
+
+  executeBiliFavoriteFolderCreatePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteFolderCreateExecutionResult> =>
+    invoke("execute_bili_favorite_folder_create_plan", params),
 
   // YouTube
   youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>

@@ -232,7 +232,7 @@ type LlmClassificationRow = {
 
 export type BiliFavoriteOperationPlanKind = Extract<
   OperationPlan["kind"],
-  "bili_batch_copy" | "bili_batch_move" | "bili_batch_delete"
+  "bili_batch_copy" | "bili_batch_move" | "bili_batch_delete" | "bili_favorite_folder_create"
 >;
 
 export type OperationPlanHistoryItem = OperationPlanItem & {
@@ -926,7 +926,7 @@ export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<
   const planRows = await d.select<OperationPlanRow[]>(
     `SELECT id, kind, status, created_at, updated_at
      FROM operation_plans
-     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete')
+     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete', 'bili_favorite_folder_create')
      ORDER BY datetime(created_at) DESC, id DESC
      LIMIT $1`,
     [limit]
@@ -1130,6 +1130,40 @@ export async function updateBiliFavoriteDeleteMemberships(plan: OperationPlan): 
       `DELETE FROM library_item_collections
        WHERE item_id = $1 AND collection_id = $2`,
       [itemId, sourceCollectionId]
+    );
+  }
+}
+
+export async function upsertBiliFavoriteFolderFromCreatePlan(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_favorite_folder_create") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const externalId = item.targetCollectionExternalId?.trim() || item.externalId.trim();
+    if (!externalId || externalId === "pending") {
+      throw new Error(`Cannot save created favorite folder ${item.title}: missing remote folder id`);
+    }
+
+    const privacy = item.target === "1" ? 1 : 0;
+    const rawMetadata = {
+      id: externalId,
+      title: item.title,
+      intro: item.targetCollectionTitle ?? "",
+      privacy,
+    };
+
+    await d.execute(
+      `INSERT INTO library_collections
+        (source, external_id, collection_type, title, raw_metadata, last_synced_at, updated_at)
+       VALUES ('bilibili', $1, 'bili_favorite_folder', $2, $3, datetime('now'), datetime('now'))
+       ON CONFLICT(source, external_id, collection_type) DO UPDATE SET
+        title = excluded.title,
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [externalId, item.title, JSON.stringify(rawMetadata)]
     );
   }
 }

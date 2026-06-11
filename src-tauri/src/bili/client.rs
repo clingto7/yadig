@@ -46,6 +46,13 @@ pub struct FavoriteDeleteBatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteFolderCreateRequest {
+    pub title: String,
+    pub intro: String,
+    pub privacy: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FavoriteWriteErrorKind {
     Failed,
     Blocked,
@@ -316,6 +323,67 @@ impl BiliClient {
         }
 
         Ok(())
+    }
+
+    pub async fn create_favorite_folder(
+        &self,
+        request: &FavoriteFolderCreateRequest,
+    ) -> std::result::Result<LibraryCollection, FavoriteWriteError> {
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/folder/add")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_folder_create_form(&session, request))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder create request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder create response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        let mut raw_metadata = body.data.unwrap_or_else(|| serde_json::json!({}));
+        if raw_metadata.get("id").is_none() && raw_metadata.get("media_id").is_none() {
+            return Err(FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: "Bilibili favorite folder create response missing folder id".to_string(),
+            });
+        }
+        if raw_metadata.get("title").is_none() {
+            raw_metadata["title"] = serde_json::Value::String(request.title.clone());
+        }
+        if raw_metadata.get("intro").is_none() {
+            raw_metadata["intro"] = serde_json::Value::String(request.intro.clone());
+        }
+        if raw_metadata.get("privacy").is_none() {
+            raw_metadata["privacy"] = serde_json::Value::Number(request.privacy.into());
+        }
+
+        normalize_bili_favorite_folder(raw_metadata).ok_or_else(|| FavoriteWriteError {
+            kind: FavoriteWriteErrorKind::Failed,
+            message: "Bilibili favorite folder create response could not be normalized".to_string(),
+        })
     }
 
     async fn favorite_library_snapshot(&self, mid: &str) -> Result<FavoriteLibrarySnapshot> {
@@ -1015,6 +1083,18 @@ fn favorite_delete_form(
     ])
 }
 
+fn favorite_folder_create_form(
+    session: &BiliSession,
+    request: &FavoriteFolderCreateRequest,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("title".to_string(), request.title.clone()),
+        ("intro".to_string(), request.intro.clone()),
+        ("privacy".to_string(), request.privacy.to_string()),
+        ("csrf".to_string(), session.bili_jct.clone()),
+    ])
+}
+
 fn favorite_write_api_error(code: i32, message: &str) -> FavoriteWriteError {
     let blocking = matches!(code, -101 | -111 | -400 | 412)
         || message.contains("csrf")
@@ -1394,6 +1474,32 @@ mod tests {
             Some("987654321:2,123456789:2")
         );
         assert_eq!(form.get("platform").map(String::as_str), Some("web"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+        assert_eq!(form.get("mid"), None);
+    }
+
+    #[test]
+    fn builds_favorite_folder_create_form() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let request = FavoriteFolderCreateRequest {
+            title: "Disposable".to_string(),
+            intro: "Temporary test folder".to_string(),
+            privacy: 1,
+        };
+
+        let form = favorite_folder_create_form(&session, &request);
+
+        assert_eq!(form.get("title").map(String::as_str), Some("Disposable"));
+        assert_eq!(
+            form.get("intro").map(String::as_str),
+            Some("Temporary test folder")
+        );
+        assert_eq!(form.get("privacy").map(String::as_str), Some("1"));
         assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
         assert_eq!(form.get("mid"), None);
     }
