@@ -130,6 +130,7 @@ pub struct LibraryItemCollection {
 #[serde(rename_all = "snake_case")]
 pub enum OperationPlanKind {
     BiliBatchAudioExtraction,
+    BiliBatchCopy,
     BiliBatchMove,
     BiliBatchDelete,
 }
@@ -170,6 +171,7 @@ impl OperationPlan {
 
     pub fn for_bili_favorite_operation(request: FavoriteOperationPlanRequest) -> Self {
         let kind = match request.action {
+            FavoriteOperationAction::Copy => OperationPlanKind::BiliBatchCopy,
             FavoriteOperationAction::Move => OperationPlanKind::BiliBatchMove,
             FavoriteOperationAction::Delete => OperationPlanKind::BiliBatchDelete,
         };
@@ -206,7 +208,10 @@ impl OperationPlan {
                                 .to_string(),
                         ),
                     )
-                } else if request.action == FavoriteOperationAction::Move
+                } else if matches!(
+                    request.action,
+                    FavoriteOperationAction::Copy | FavoriteOperationAction::Move
+                )
                     && request
                         .target_collection_external_id
                         .as_deref()
@@ -216,15 +221,30 @@ impl OperationPlan {
                 {
                     (
                         "blocked".to_string(),
-                        Some("Move target favorite folder is required".to_string()),
+                        Some(format!(
+                            "{} target favorite folder is required",
+                            request.action.as_str()
+                        )),
                     )
-                } else if request.action == FavoriteOperationAction::Move
+                } else if matches!(
+                    request.action,
+                    FavoriteOperationAction::Copy | FavoriteOperationAction::Move
+                )
                     && candidate.source_collection_external_id
                         == request.target_collection_external_id
                 {
                     (
                         "skipped".to_string(),
                         Some("Item is already in the target favorite folder".to_string()),
+                    )
+                } else if request.action == FavoriteOperationAction::Copy
+                    && candidate.collection_external_ids.iter().any(|collection_id| {
+                        Some(collection_id) == request.target_collection_external_id.as_ref()
+                    })
+                {
+                    (
+                        "skipped".to_string(),
+                        Some("Item already has target favorite folder membership".to_string()),
                     )
                 } else {
                     (pending_status(), None)
@@ -291,6 +311,7 @@ fn pending_status() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FavoriteOperationAction {
+    Copy,
     Move,
     Delete,
 }
@@ -298,6 +319,7 @@ pub enum FavoriteOperationAction {
 impl FavoriteOperationAction {
     fn as_str(&self) -> &'static str {
         match self {
+            FavoriteOperationAction::Copy => "copy",
             FavoriteOperationAction::Move => "move",
             FavoriteOperationAction::Delete => "delete",
         }
@@ -311,6 +333,8 @@ pub struct FavoriteOperationCandidate {
     pub title: String,
     pub source_collection_external_id: Option<String>,
     pub source_collection_title: Option<String>,
+    #[serde(default)]
+    pub collection_external_ids: Vec<String>,
     pub resource_id: Option<String>,
     pub resource_type: Option<String>,
 }
@@ -353,6 +377,7 @@ mod favorite_operation_plan_tests {
             title: "Favorite video".to_string(),
             source_collection_external_id: Some("100".to_string()),
             source_collection_title: Some("Inbox".to_string()),
+            collection_external_ids: vec!["100".to_string()],
             resource_id: Some("987654321".to_string()),
             resource_type: Some("2".to_string()),
         }
@@ -380,6 +405,62 @@ mod favorite_operation_plan_tests {
         assert_eq!(item.target_collection_title.as_deref(), Some("Samples"));
         assert_eq!(item.resource_id.as_deref(), Some("987654321"));
         assert_eq!(item.resource_type.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn builds_pending_copy_plan_for_valid_favorite_membership() {
+        let plan = OperationPlan::for_bili_favorite_operation(FavoriteOperationPlanRequest {
+            action: FavoriteOperationAction::Copy,
+            target_collection_external_id: Some("200".to_string()),
+            target_collection_title: Some("Samples".to_string()),
+            items: vec![candidate()],
+        });
+
+        assert_eq!(plan.kind, OperationPlanKind::BiliBatchCopy);
+        let item = &plan.items[0];
+        assert_eq!(item.action, "copy");
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.error, None);
+        assert_eq!(item.source_collection_external_id.as_deref(), Some("100"));
+        assert_eq!(item.target_collection_external_id.as_deref(), Some("200"));
+    }
+
+    #[test]
+    fn skips_copy_plan_item_when_target_equals_source_folder() {
+        let plan = OperationPlan::for_bili_favorite_operation(FavoriteOperationPlanRequest {
+            action: FavoriteOperationAction::Copy,
+            target_collection_external_id: Some("100".to_string()),
+            target_collection_title: Some("Inbox".to_string()),
+            items: vec![candidate()],
+        });
+
+        let item = &plan.items[0];
+        assert_eq!(plan.kind, OperationPlanKind::BiliBatchCopy);
+        assert_eq!(item.status, "skipped");
+        assert_eq!(
+            item.error.as_deref(),
+            Some("Item is already in the target favorite folder")
+        );
+    }
+
+    #[test]
+    fn skips_copy_plan_item_when_target_membership_already_exists() {
+        let mut existing = candidate();
+        existing.collection_external_ids.push("200".to_string());
+        let plan = OperationPlan::for_bili_favorite_operation(FavoriteOperationPlanRequest {
+            action: FavoriteOperationAction::Copy,
+            target_collection_external_id: Some("200".to_string()),
+            target_collection_title: Some("Samples".to_string()),
+            items: vec![existing],
+        });
+
+        let item = &plan.items[0];
+        assert_eq!(plan.kind, OperationPlanKind::BiliBatchCopy);
+        assert_eq!(item.status, "skipped");
+        assert_eq!(
+            item.error.as_deref(),
+            Some("Item already has target favorite folder membership")
+        );
     }
 
     #[test]

@@ -181,6 +181,7 @@ type LibraryCollectionRow = {
 };
 
 type FavoriteOperationCandidateRow = {
+  item_id: number;
   external_id: string;
   title: string;
   source_collection_external_id: string;
@@ -231,7 +232,7 @@ type LlmClassificationRow = {
 
 export type BiliFavoriteOperationPlanKind = Extract<
   OperationPlan["kind"],
-  "bili_batch_move" | "bili_batch_delete"
+  "bili_batch_copy" | "bili_batch_move" | "bili_batch_delete"
 >;
 
 export type OperationPlanHistoryItem = OperationPlanItem & {
@@ -644,7 +645,8 @@ export async function listFavoriteOperationCandidates(
 ): Promise<FavoriteOperationCandidate[]> {
   const d = await getDb();
   const rows = await d.select<FavoriteOperationCandidateRow[]>(
-    `SELECT li.external_id,
+    `SELECT li.id AS item_id,
+            li.external_id,
             li.title,
             lc.external_id AS source_collection_external_id,
             lc.title AS source_collection_title,
@@ -660,6 +662,26 @@ export async function listFavoriteOperationCandidates(
      ORDER BY li.title COLLATE NOCASE ASC`,
     [sourceCollectionExternalId]
   );
+  const itemIds = rows.map((row) => row.item_id);
+  const collectionIdsByItemId = new Map<number, string[]>();
+  if (itemIds.length > 0) {
+    const placeholders = itemIds.map((_, index) => `$${index + 1}`).join(", ");
+    const membershipRows = await d.select<{ item_id: number; collection_external_id: string }[]>(
+      `SELECT lic.item_id,
+              lc.external_id AS collection_external_id
+       FROM library_item_collections lic
+       INNER JOIN library_collections lc ON lc.id = lic.collection_id
+       WHERE lic.item_id IN (${placeholders})
+         AND lc.source = 'bilibili'
+         AND lc.collection_type = 'bili_favorite_folder'`,
+      itemIds
+    );
+    for (const membership of membershipRows) {
+      const collectionIds = collectionIdsByItemId.get(membership.item_id) ?? [];
+      collectionIds.push(membership.collection_external_id);
+      collectionIdsByItemId.set(membership.item_id, collectionIds);
+    }
+  }
 
   return rows.map((row) => {
     const rawMetadata = parseRawMetadata(row.raw_metadata);
@@ -668,6 +690,7 @@ export async function listFavoriteOperationCandidates(
       title: row.title,
       sourceCollectionExternalId: row.source_collection_external_id,
       sourceCollectionTitle: row.source_collection_title,
+      collectionExternalIds: collectionIdsByItemId.get(row.item_id) ?? [row.source_collection_external_id],
       resourceId: rawMetadataString(rawMetadata, "resourceId"),
       resourceType: rawMetadataString(rawMetadata, "resourceType"),
     };
@@ -903,7 +926,7 @@ export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<
   const planRows = await d.select<OperationPlanRow[]>(
     `SELECT id, kind, status, created_at, updated_at
      FROM operation_plans
-     WHERE kind IN ('bili_batch_move', 'bili_batch_delete')
+     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete')
      ORDER BY datetime(created_at) DESC, id DESC
      LIMIT $1`,
     [limit]
@@ -987,6 +1010,65 @@ export async function updateBiliFavoriteMoveMemberships(plan: OperationPlan): Pr
           [itemId, sourceCollectionId]
         );
       }
+    }
+
+    await d.execute(
+      `INSERT INTO library_item_collections
+        (item_id, collection_id, raw_metadata, last_synced_at, updated_at)
+       VALUES ($1, $2, $3, datetime('now'), datetime('now'))
+       ON CONFLICT(item_id, collection_id) DO UPDATE SET
+        raw_metadata = excluded.raw_metadata,
+        last_synced_at = datetime('now'),
+        updated_at = datetime('now')`,
+      [
+        itemId,
+        targetCollection.id,
+        JSON.stringify({
+          resourceId,
+          resourceType,
+          bvid: item.externalId,
+          sourceFolderId: targetCollectionExternalId,
+          sourceFolderTitle: item.targetCollectionTitle ?? targetCollection.title,
+        }),
+      ]
+    );
+  }
+}
+
+export async function updateBiliFavoriteCopyMemberships(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_batch_copy") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const targetCollectionExternalId = item.targetCollectionExternalId?.trim();
+    const resourceId = item.resourceId?.trim();
+    const resourceType = item.resourceType?.trim();
+    if (!targetCollectionExternalId || !resourceId || !resourceType) {
+      throw new Error(`Cannot update local copy membership for ${item.title}: missing target folder or remote resource identity`);
+    }
+
+    const itemRows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_items
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND item_type = 'bili_favorite_video'
+       LIMIT 1`,
+      [item.externalId]
+    );
+    const targetRows = await d.select<{ id: number; title: string }[]>(
+      `SELECT id, title FROM library_collections
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND collection_type = 'bili_favorite_folder'
+       LIMIT 1`,
+      [targetCollectionExternalId]
+    );
+    const itemId = itemRows[0]?.id;
+    const targetCollection = targetRows[0];
+    if (!itemId || !targetCollection) {
+      throw new Error(`Cannot update local copy membership for ${item.title}: local item or target folder is missing`);
     }
 
     await d.execute(

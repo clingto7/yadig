@@ -20,6 +20,8 @@ use tauri::State;
 
 const FAVORITE_MOVE_BATCH_SIZE: usize = 10;
 const FAVORITE_MOVE_BATCH_PAUSE_MS: u64 = 1_500;
+const FAVORITE_COPY_BATCH_SIZE: usize = 10;
+const FAVORITE_COPY_BATCH_PAUSE_MS: u64 = 1_500;
 const FAVORITE_DELETE_BATCH_SIZE: usize = 10;
 const FAVORITE_DELETE_BATCH_PAUSE_MS: u64 = 1_500;
 
@@ -135,6 +137,31 @@ pub async fn execute_bili_favorite_move_plan(
 }
 
 #[tauri::command]
+pub async fn execute_bili_favorite_copy_plan(
+    auth: State<'_, BiliAuth>,
+    plan: OperationPlan,
+    confirmed: bool,
+) -> Result<BiliFavoriteMoveExecutionResult> {
+    let client = Arc::new(BiliClient::new((*auth).clone()));
+    execute_favorite_copy_plan_with_runner(
+        plan,
+        confirmed,
+        FAVORITE_COPY_BATCH_SIZE,
+        move |batch| {
+            let client = Arc::clone(&client);
+            async move {
+                let result = client.copy_favorite_resources(&batch).await;
+                if result.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(FAVORITE_COPY_BATCH_PAUSE_MS)).await;
+                }
+                result
+            }
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn execute_bili_favorite_delete_plan(
     auth: State<'_, BiliAuth>,
     plan: OperationPlan,
@@ -160,29 +187,73 @@ pub async fn execute_bili_favorite_delete_plan(
 }
 
 async fn execute_favorite_move_plan_with_runner<F, Fut>(
+    plan: OperationPlan,
+    confirmed: bool,
+    batch_size: usize,
+    runner: F,
+) -> Result<BiliFavoriteMoveExecutionResult>
+where
+    F: FnMut(FavoriteMoveBatch) -> Fut,
+    Fut: Future<Output = std::result::Result<(), FavoriteWriteError>>,
+{
+    execute_favorite_transfer_plan_with_runner(
+        plan,
+        confirmed,
+        batch_size,
+        OperationPlanKind::BiliBatchMove,
+        "move",
+        runner,
+    )
+    .await
+}
+
+async fn execute_favorite_copy_plan_with_runner<F, Fut>(
+    plan: OperationPlan,
+    confirmed: bool,
+    batch_size: usize,
+    runner: F,
+) -> Result<BiliFavoriteMoveExecutionResult>
+where
+    F: FnMut(FavoriteMoveBatch) -> Fut,
+    Fut: Future<Output = std::result::Result<(), FavoriteWriteError>>,
+{
+    execute_favorite_transfer_plan_with_runner(
+        plan,
+        confirmed,
+        batch_size,
+        OperationPlanKind::BiliBatchCopy,
+        "copy",
+        runner,
+    )
+    .await
+}
+
+async fn execute_favorite_transfer_plan_with_runner<F, Fut>(
     mut plan: OperationPlan,
     confirmed: bool,
     batch_size: usize,
+    expected_kind: OperationPlanKind,
+    action_label: &str,
     mut runner: F,
 ) -> Result<BiliFavoriteMoveExecutionResult>
 where
     F: FnMut(FavoriteMoveBatch) -> Fut,
     Fut: Future<Output = std::result::Result<(), FavoriteWriteError>>,
 {
-    if plan.kind != OperationPlanKind::BiliBatchMove {
-        return Err(YadigError::Network(
-            "Only Bilibili favorite move plans can be executed by this command".into(),
-        ));
+    if plan.kind != expected_kind {
+        return Err(YadigError::Network(format!(
+            "Only Bilibili favorite {action_label} plans can be executed by this command"
+        )));
     }
     if !confirmed {
-        return Err(YadigError::Network(
-            "Bilibili favorite move execution requires explicit confirmation".into(),
-        ));
+        return Err(YadigError::Network(format!(
+            "Bilibili favorite {action_label} execution requires explicit confirmation"
+        )));
     }
     if batch_size == 0 {
-        return Err(YadigError::Network(
-            "Bilibili favorite move batch size must be greater than zero".into(),
-        ));
+        return Err(YadigError::Network(format!(
+            "Bilibili favorite {action_label} batch size must be greater than zero"
+        )));
     }
 
     let mut pending_batch = PendingFavoriteMoveBatch::default();
@@ -207,7 +278,7 @@ where
                 stopped = true;
                 block_remaining_pending_items(
                     &mut plan,
-                    "Execution stopped after Bilibili blocked a move batch",
+                    &format!("Execution stopped after Bilibili blocked a {action_label} batch"),
                 );
                 break;
             }
@@ -223,7 +294,7 @@ where
         stopped = true;
         block_remaining_pending_items(
             &mut plan,
-            "Execution stopped after Bilibili blocked a move batch",
+            &format!("Execution stopped after Bilibili blocked a {action_label} batch"),
         );
     }
 
@@ -629,6 +700,124 @@ mod favorite_move_execution_tests {
 
         let result = futures::executor::block_on(execute_favorite_move_plan_with_runner(
             move_plan(11),
+            true,
+            10,
+            |_batch| {
+                *calls.borrow_mut() += 1;
+                async {
+                    Err(FavoriteWriteError {
+                        kind: FavoriteWriteErrorKind::Blocked,
+                        message: "Bilibili favorite write blocked (-111): csrf failed".to_string(),
+                    })
+                }
+            },
+        ))
+        .expect("blocked item statuses should be returned");
+
+        assert_eq!(*calls.borrow(), 1);
+        assert!(result.stopped);
+        assert!(result.plan.items[..10].iter().all(|item| {
+            item.status == "blocked"
+                && item
+                    .error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("csrf failed")
+        }));
+        assert_eq!(result.plan.items[10].status, "blocked");
+        assert!(result.plan.items[10]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Execution stopped"));
+    }
+}
+
+#[cfg(test)]
+mod favorite_copy_execution_tests {
+    use super::*;
+    use crate::bili::client::{FavoriteMoveBatch, FavoriteWriteError, FavoriteWriteErrorKind};
+    use crate::library::OperationPlanItem;
+    use std::cell::RefCell;
+
+    fn copy_item(index: usize) -> OperationPlanItem {
+        OperationPlanItem {
+            external_id: format!("BV{index:010}"),
+            title: format!("Favorite {index}"),
+            action: "copy".to_string(),
+            target: Some("200".to_string()),
+            status: "pending".to_string(),
+            error: None,
+            source_collection_external_id: Some("100".to_string()),
+            source_collection_title: Some("Inbox".to_string()),
+            target_collection_external_id: Some("200".to_string()),
+            target_collection_title: Some("Samples".to_string()),
+            resource_id: Some(format!("987654{index}")),
+            resource_type: Some("2".to_string()),
+        }
+    }
+
+    fn copy_plan(count: usize) -> OperationPlan {
+        OperationPlan {
+            kind: OperationPlanKind::BiliBatchCopy,
+            items: (0..count).map(copy_item).collect(),
+        }
+    }
+
+    #[test]
+    fn favorite_copy_execution_requires_explicit_confirmation() {
+        let calls = RefCell::new(Vec::<FavoriteMoveBatch>::new());
+
+        let err = futures::executor::block_on(execute_favorite_copy_plan_with_runner(
+            copy_plan(1),
+            false,
+            10,
+            |batch| {
+                calls.borrow_mut().push(batch);
+                async { Ok(()) }
+            },
+        ))
+        .expect_err("confirmation is required");
+
+        assert!(err.to_string().contains("explicit confirmation"));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn favorite_copy_execution_batches_pending_items_and_marks_success() {
+        let calls = RefCell::new(Vec::<FavoriteMoveBatch>::new());
+
+        let result = futures::executor::block_on(execute_favorite_copy_plan_with_runner(
+            copy_plan(11),
+            true,
+            10,
+            |batch| {
+                calls.borrow_mut().push(batch);
+                async { Ok(()) }
+            },
+        ))
+        .expect("copy execution should succeed");
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].source_media_id, "100");
+        assert_eq!(calls[0].target_media_id, "200");
+        assert_eq!(calls[0].resources.len(), 10);
+        assert_eq!(calls[1].resources.len(), 1);
+        assert!(result
+            .plan
+            .items
+            .iter()
+            .all(|item| item.status == "success"));
+        assert!(!result.stopped);
+    }
+
+    #[test]
+    fn favorite_copy_execution_blocks_remaining_items_after_security_failure() {
+        let calls = RefCell::new(0usize);
+
+        let result = futures::executor::block_on(execute_favorite_copy_plan_with_runner(
+            copy_plan(11),
             true,
             10,
             |_batch| {

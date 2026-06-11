@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
-import { Brain, Clock3, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
+import { Brain, Clock3, Copy as CopyIcon, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
   buildClassificationProgress,
   chunkClassificationItems,
@@ -35,6 +35,7 @@ import {
   listLibraryItemsWithCollections,
   saveLlmClassifications,
   saveOperationPlan,
+  updateBiliFavoriteCopyMemberships,
   updateBiliFavoriteDeleteMemberships,
   updateBiliFavoriteMoveMemberships,
   upsertBiliSyncResult,
@@ -84,6 +85,8 @@ function isMusicSuggestion(analysis?: LlmClassificationItem) {
 
 function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
   switch (kind) {
+    case "bili_batch_copy":
+      return "Copy";
     case "bili_batch_move":
       return "Move";
     case "bili_batch_delete":
@@ -93,6 +96,9 @@ function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
 
 function operationActionLabel(action: string) {
   switch (action) {
+    case "copy":
+    case "copy_favorite":
+      return "Copy";
     case "move":
     case "move_favorite":
       return "Move";
@@ -515,8 +521,8 @@ export function WorkstationPage() {
       setMessage("Select at least one favorite video before creating a plan.");
       return;
     }
-    if (action === "move" && !targetFolder) {
-      setMessage("Choose a target favorite folder before creating a move plan.");
+    if ((action === "copy" || action === "move") && !targetFolder) {
+      setMessage(`Choose a target favorite folder before creating a ${action} plan.`);
       return;
     }
 
@@ -527,8 +533,8 @@ export function WorkstationPage() {
         .filter((candidate) => selectedFavoriteIds.has(candidate.externalId));
       const nextPlan = await tauri.createBiliFavoriteOperationPlan({
         action,
-        targetCollectionExternalId: action === "move" ? targetFolder?.externalId ?? null : null,
-        targetCollectionTitle: action === "move" ? targetFolder?.title ?? null : null,
+        targetCollectionExternalId: action === "copy" || action === "move" ? targetFolder?.externalId ?? null : null,
+        targetCollectionTitle: action === "copy" || action === "move" ? targetFolder?.title ?? null : null,
         items: candidates,
       });
       const savedPlanId = await saveOperationPlan(nextPlan);
@@ -598,6 +604,46 @@ export function WorkstationPage() {
       );
     } catch (err) {
       setMessage(safeErrorMessage("Favorite move execution failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function executeFavoriteCopyPlan() {
+    if (!plan || plan.kind !== "bili_batch_copy") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This copy plan has no pending items to execute.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Copy ${pendingCount} favorite video${pendingCount === 1 ? "" : "s"} on Bilibili? This preserves the source folder membership.`
+    );
+    if (!confirmed) return;
+
+    setBusy("favorite-copy-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteCopyPlan({ plan, confirmed: true });
+      await updateBiliFavoriteCopyMemberships(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
+      const [storedItems, storedFolders] = await Promise.all([
+        listLibraryItemsWithCollections(),
+        listLibraryCollections("bili_favorite_folder"),
+      ]);
+      setItems(storedItems);
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      setSelectedFavoriteIds(new Set());
+      const successCount = result.plan.items.filter((item) => item.status === "success").length;
+      setMessage(
+        result.stopped
+          ? `Copy stopped after ${successCount}/${result.plan.items.length} successful items.`
+          : `Copied ${successCount}/${result.plan.items.length} favorite items.`
+      );
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite copy execution failed", err));
     } finally {
       setBusy(null);
     }
@@ -775,8 +821,16 @@ export function WorkstationPage() {
                 </label>
                 <div className="flex flex-wrap gap-2 text-sm">
                   <button
+                    onClick={() => void createFavoritePlan("copy")}
+                    disabled={!favoritePlanContextReady || selectedFavoriteIds.size === 0 || !targetFolder || busy !== null}
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
+                  >
+                    <CopyIcon className="h-4 w-4" />
+                    Copy Draft
+                  </button>
+                  <button
                     onClick={() => void createFavoritePlan("move")}
-                    disabled={!favoritePlanContextReady || selectedFavoriteIds.size === 0 || busy !== null}
+                    disabled={!favoritePlanContextReady || selectedFavoriteIds.size === 0 || !targetFolder || busy !== null}
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 hover:bg-secondary disabled:opacity-50"
                   >
                     <FolderInput className="h-4 w-4" />
@@ -891,6 +945,9 @@ export function WorkstationPage() {
               <div className="rounded-lg border border-border bg-card p-4">
                 <h3 className="font-semibold">Plan Preview</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span className="rounded bg-secondary px-2 py-0.5">
+                    {favoritePlanKindLabel(plan.kind)}
+                  </span>
                   {OPERATION_ITEM_STATUSES.map((status) => (
                     <span key={status} className="rounded bg-secondary px-2 py-0.5">
                       {operationPlanItemStatusLabel(status)} {planStatusCounts.get(status) ?? 0}
@@ -902,6 +959,8 @@ export function WorkstationPage() {
                     <div key={`${item.externalId}:${item.sourceCollectionExternalId ?? ""}`} className="rounded border border-border p-2">
                       <div className="font-medium">{item.title}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
+                        {operationActionLabel(item.action)}
+                        {" · "}
                         {item.sourceCollectionTitle ?? "Unknown source"}
                         {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
                         {" · "}
@@ -921,6 +980,16 @@ export function WorkstationPage() {
                   >
                     <FolderInput className="h-4 w-4" />
                     Execute Move
+                  </button>
+                )}
+                {plan.kind === "bili_batch_copy" && (
+                  <button
+                    onClick={() => void executeFavoriteCopyPlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <CopyIcon className="h-4 w-4" />
+                    Execute Copy
                   </button>
                 )}
                 {plan.kind === "bili_batch_delete" && (

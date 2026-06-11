@@ -165,7 +165,7 @@ export interface AudioExtractionCandidate {
   isMusic: boolean;
 }
 
-export type FavoriteOperationAction = "move" | "delete";
+export type FavoriteOperationAction = "copy" | "move" | "delete";
 
 export type OperationPlanItemStatus =
   | "pending"
@@ -180,6 +180,7 @@ export interface FavoriteOperationCandidate {
   title: string;
   sourceCollectionExternalId: string | null;
   sourceCollectionTitle: string | null;
+  collectionExternalIds: string[];
   resourceId: string | null;
   resourceType: string | null;
 }
@@ -193,6 +194,7 @@ export interface FavoriteOperationPlanRequest {
 
 export type OperationPlanKind =
   | "bili_batch_audio_extraction"
+  | "bili_batch_copy"
   | "bili_batch_move"
   | "bili_batch_delete";
 
@@ -227,6 +229,11 @@ export interface BiliAudioExtractionExecutionResult {
 }
 
 export interface BiliFavoriteMoveExecutionResult {
+  plan: OperationPlan;
+  stopped: boolean;
+}
+
+export interface BiliFavoriteCopyExecutionResult {
   plan: OperationPlan;
   stopped: boolean;
 }
@@ -322,6 +329,9 @@ export const tauri = {
 
   executeBiliFavoriteMovePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteMoveExecutionResult> =>
     invoke("execute_bili_favorite_move_plan", params),
+
+  executeBiliFavoriteCopyPlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteCopyExecutionResult> =>
+    invoke("execute_bili_favorite_copy_plan", params),
 
   executeBiliFavoriteDeletePlan: (params: { plan: OperationPlan; confirmationText: string }): Promise<BiliFavoriteDeleteExecutionResult> =>
     invoke("execute_bili_favorite_delete_plan", params),

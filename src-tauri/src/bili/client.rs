@@ -228,6 +228,51 @@ impl BiliClient {
         Ok(())
     }
 
+    pub async fn copy_favorite_resources(
+        &self,
+        batch: &FavoriteMoveBatch,
+    ) -> std::result::Result<(), FavoriteWriteError> {
+        if batch.resources.is_empty() {
+            return Ok(());
+        }
+
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/resource/copy")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_copy_form(&session, batch))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite copy request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite copy response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        Ok(())
+    }
+
     pub async fn delete_favorite_resources(
         &self,
         batch: &FavoriteDeleteBatch,
@@ -944,6 +989,13 @@ fn favorite_move_form(
     ])
 }
 
+fn favorite_copy_form(
+    session: &BiliSession,
+    batch: &FavoriteMoveBatch,
+) -> BTreeMap<String, String> {
+    favorite_move_form(session, batch)
+}
+
 fn favorite_delete_form(
     session: &BiliSession,
     batch: &FavoriteDeleteBatch,
@@ -1264,6 +1316,42 @@ mod tests {
         };
 
         let form = favorite_move_form(&session, &batch);
+
+        assert_eq!(form.get("src_media_id").map(String::as_str), Some("100"));
+        assert_eq!(form.get("tar_media_id").map(String::as_str), Some("200"));
+        assert_eq!(form.get("mid").map(String::as_str), Some("233333"));
+        assert_eq!(
+            form.get("resources").map(String::as_str),
+            Some("987654321:2,123456789:2")
+        );
+        assert_eq!(form.get("platform").map(String::as_str), Some("web"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+    }
+
+    #[test]
+    fn builds_favorite_copy_form_for_resource_pairs() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let batch = FavoriteMoveBatch {
+            source_media_id: "100".to_string(),
+            target_media_id: "200".to_string(),
+            resources: vec![
+                FavoriteMoveResource {
+                    id: "987654321".to_string(),
+                    resource_type: "2".to_string(),
+                },
+                FavoriteMoveResource {
+                    id: "123456789".to_string(),
+                    resource_type: "2".to_string(),
+                },
+            ],
+        };
+
+        let form = favorite_copy_form(&session, &batch);
 
         assert_eq!(form.get("src_media_id").map(String::as_str), Some("100"));
         assert_eq!(form.get("tar_media_id").map(String::as_str), Some("200"));
