@@ -825,18 +825,12 @@ impl BiliClient {
             // Clean up temp file
             let _ = std::fs::remove_file(&temp);
 
-            let audio_segments: Vec<AudioSegment> = player
-                .view_points
-                .iter()
-                .zip(output_paths.iter())
-                .map(|(vp, path)| AudioSegment {
-                    title: vp.content.clone(),
-                    file_path: path.clone(),
-                    duration: (vp.to - vp.from) as u32,
-                    quality: best.id,
-                    audio_url: best.base_url.clone(),
-                })
-                .collect();
+            let audio_segments = chapter_audio_segments_from_split_paths(
+                &player.view_points,
+                &output_paths,
+                best.id,
+                &best.base_url,
+            );
 
             Ok(ExtractionResult {
                 video_title: info.title.clone(),
@@ -1267,6 +1261,25 @@ fn collection_episode_output_path(
         .join(make_collection_episode_filename(episode_title))
 }
 
+fn chapter_audio_segments_from_split_paths(
+    view_points: &[ViewPoint],
+    output_paths: &[String],
+    quality: i32,
+    audio_url: &str,
+) -> Vec<AudioSegment> {
+    view_points
+        .iter()
+        .zip(output_paths.iter())
+        .map(|(view_point, path)| AudioSegment {
+            title: view_point.content.clone(),
+            file_path: path.clone(),
+            duration: (view_point.to - view_point.from) as u32,
+            quality,
+            audio_url: audio_url.to_string(),
+        })
+        .collect()
+}
+
 fn season_archives_page_url(mid: i64, season_id: i64, page_num: u32, page_size: u32) -> String {
     format!(
         "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid={mid}&season_id={season_id}&page_num={page_num}&page_size={page_size}"
@@ -1634,6 +1647,37 @@ mod tests {
             url,
             "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=37737161&season_id=1227671&page_num=2&page_size=50"
         );
+    }
+
+    #[test]
+    fn maps_eight_chapters_to_audio_segments_with_titles_and_timestamps() {
+        let chapters: Vec<ViewPoint> = (0..8)
+            .map(|index| ViewPoint {
+                content: format!("Chapter {}", index + 1),
+                from: index as f64 * 45.0,
+                to: (index + 1) as f64 * 45.0,
+            })
+            .collect();
+        let output_paths: Vec<String> = (0..8)
+            .map(|index| format!("/tmp/chapter-{}.m4a", index + 1))
+            .collect();
+
+        let segments = chapter_audio_segments_from_split_paths(
+            &chapters,
+            &output_paths,
+            30280,
+            "https://example.com/audio.m4a",
+        );
+
+        assert_eq!(segments.len(), 8);
+        assert_eq!(segments[0].title, "Chapter 1");
+        assert_eq!(segments[0].file_path, "/tmp/chapter-1.m4a");
+        assert_eq!(segments[0].duration, 45);
+        assert_eq!(segments[0].quality, 30280);
+        assert_eq!(segments[0].audio_url, "https://example.com/audio.m4a");
+        assert_eq!(segments[7].title, "Chapter 8");
+        assert_eq!(segments[7].file_path, "/tmp/chapter-8.m4a");
+        assert_eq!(segments[7].duration, 45);
     }
 
     #[test]

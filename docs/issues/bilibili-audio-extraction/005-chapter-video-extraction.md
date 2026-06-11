@@ -36,6 +36,7 @@ Handle long videos that have chapter markers (view_points) in the progress bar. 
 - When FFmpeg is available, extraction downloads the full audio to a temp file, splits by chapter timestamps, removes the temp file, and returns `ExtractionType::Chapters`.
 - When FFmpeg is unavailable, extraction returns the full audio as a single segment with `ExtractionType::Chapters` plus a warning explaining that FFmpeg is needed for chapter splitting.
 - Search result warnings are shown inline, so users can see why a chapter video produced only one saved file.
+- Chapter metadata mapping is covered by `maps_eight_chapters_to_audio_segments_with_titles_and_timestamps`, which verifies 8 `ViewPoint` records become 8 `AudioSegment` values with matching titles, durations, paths, quality, and audio URL.
 - A live 8-chapter Bilibili sample has not been manually smoke-tested in this slice, so that criterion remains open.
 
 ## Blocked by
