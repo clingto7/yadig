@@ -1,6 +1,7 @@
 import type { ExtractionResult } from "@/lib/tauri";
 import {
   buildBiliBatchDownloadState,
+  buildBiliExtractionProgressState,
   getBiliSavedFolderPath,
   shouldShowBiliBatchDownload,
 } from "@/lib/bili-extraction-ui";
@@ -68,5 +69,32 @@ export const biliExtractionUiContract = {
   active: buildBiliBatchDownloadState(multipartResult, {
     completed: 1,
     total: 2,
+  }),
+  preparingExtraction: buildBiliExtractionProgressState({
+    extracting: true,
+    progress: null,
+    cancelRequested: false,
+  }),
+  runningCollectionExtraction: buildBiliExtractionProgressState({
+    extracting: true,
+    progress: {
+      jobId: "bili-job-contract",
+      completed: 3,
+      total: 10,
+      currentTitle: "Track 3",
+      cancelled: false,
+    },
+    cancelRequested: false,
+  }),
+  cancellingCollectionExtraction: buildBiliExtractionProgressState({
+    extracting: true,
+    progress: {
+      jobId: "bili-job-contract",
+      completed: 3,
+      total: 10,
+      currentTitle: "Track 3",
+      cancelled: false,
+    },
+    cancelRequested: true,
   }),
 };

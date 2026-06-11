@@ -11,8 +11,71 @@ export interface BiliBatchDownloadState {
   label: string;
 }
 
+export interface BiliCollectionExtractionProgress {
+  jobId: string;
+  completed: number;
+  total: number;
+  currentTitle: string | null;
+  cancelled: boolean;
+}
+
+export interface BiliExtractionProgressStateInput {
+  extracting: boolean;
+  progress: BiliCollectionExtractionProgress | null;
+  cancelRequested: boolean;
+}
+
+export interface BiliExtractionProgressState {
+  show: boolean;
+  label: string;
+  percent: number;
+  canCancel: boolean;
+}
+
 export function shouldShowBiliBatchDownload(result: ExtractionResult): boolean {
   return result.segments.length > 1;
+}
+
+export function buildBiliExtractionProgressState({
+  extracting,
+  progress,
+  cancelRequested,
+}: BiliExtractionProgressStateInput): BiliExtractionProgressState {
+  if (!extracting) {
+    return {
+      show: false,
+      label: "",
+      percent: 0,
+      canCancel: false,
+    };
+  }
+
+  if (!progress) {
+    return {
+      show: true,
+      label: "Preparing audio extraction...",
+      percent: 0,
+      canCancel: false,
+    };
+  }
+
+  const total = Math.max(0, progress.total);
+  const completed = Math.min(Math.max(0, progress.completed), total);
+  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const position = total > 0 ? `${completed}/${total}` : "0/0";
+  const cancelling = cancelRequested || progress.cancelled;
+  const label = cancelling
+    ? `Cancelling after ${position}...`
+    : progress.currentTitle
+      ? `Extracting ${position}: ${progress.currentTitle}`
+      : `Extracting ${position}`;
+
+  return {
+    show: true,
+    label,
+    percent,
+    canCancel: !cancelling && total > 0 && completed < total,
+  };
 }
 
 export function buildBiliBatchDownloadState(

@@ -23,6 +23,16 @@ export interface ExtractionResult {
   warnings: string[];
 }
 
+export interface BiliCollectionExtractionProgressEvent {
+  jobId: string;
+  completed: number;
+  total: number;
+  currentTitle: string | null;
+  cancelled: boolean;
+}
+
+export const BILI_COLLECTION_PROGRESS_EVENT = "bili://collection-progress";
+
 export type LibraryItemType =
   | "bili_favorite_video"
   | "bili_watch_later_video"
@@ -332,14 +342,17 @@ export const tauri = {
   biliSessionStatus: (): Promise<{ loggedIn: boolean; username: string | null; isPremium: boolean }> =>
     invoke("bili_session_status"),
 
-  biliExtractAudio: (params: { url: string }): Promise<ExtractionResult> =>
+  biliExtractAudio: (params: { url: string; jobId?: string }): Promise<ExtractionResult> =>
     invoke("bili_extract_audio", params),
 
   biliExtractSegment: (params: { bvid: string; cid: number; title: string }): Promise<ExtractionResult> =>
     invoke("bili_extract_segment", params),
 
-  biliExtractCollection: (params: { mid: number; seasonId: number }): Promise<ExtractionResult> =>
+  biliExtractCollection: (params: { mid: number; seasonId: number; jobId?: string }): Promise<ExtractionResult> =>
     invoke("bili_extract_collection", params),
+
+  biliCancelExtraction: (params: { jobId: string }): Promise<void> =>
+    invoke("bili_cancel_extraction", params),
 
   biliCheckFfmpeg: (): Promise<boolean> => invoke("bili_check_ffmpeg"),
 

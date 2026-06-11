@@ -111,6 +111,7 @@ pub fn run() {
         .manage(registry)
         .manage(discogs_keys)
         .manage(bili_auth)
+        .manage(commands::bilibili::BiliExtractionJobs::default())
         .manage(youtube_client)
         .invoke_handler(tauri::generate_handler![
             commands::search::search_sources,
@@ -131,6 +132,7 @@ pub fn run() {
             commands::bilibili::bili_extract_audio,
             commands::bilibili::bili_extract_segment,
             commands::bilibili::bili_extract_collection,
+            commands::bilibili::bili_cancel_extraction,
             commands::bilibili::bili_check_ffmpeg,
             commands::bilibili::bili_get_playurl,
             commands::library::bili_sync_library,

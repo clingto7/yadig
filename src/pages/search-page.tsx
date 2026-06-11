@@ -1,20 +1,28 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music, CircleAlert } from "lucide-react";
-import { tauri } from "@/lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music, CircleAlert, X } from "lucide-react";
+import { BILI_COLLECTION_PROGRESS_EVENT, tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
 import { notifyDownloadSaved } from "@/lib/download-notification";
 import { usePlayer } from "@/lib/player-context";
 import { isBiliExtractableUrl, isYoutubeExtractableUrl } from "@/lib/search-url-detection";
 import {
   buildBiliBatchDownloadState,
+  buildBiliExtractionProgressState,
   getBiliSavedFolderPath,
   type BiliBatchDownloadProgress,
+  type BiliCollectionExtractionProgress,
 } from "@/lib/bili-extraction-ui";
 import type { ContentItem, SearchResult, YoutubeExtractionResult } from "@/types/source";
-import type { ExtractionResult, AudioSegment } from "@/lib/tauri";
+import type { ExtractionResult, AudioSegment, BiliCollectionExtractionProgressEvent } from "@/lib/tauri";
 
 const SOURCE_TAB_ALL = "__all__";
+
+function createBiliExtractionJobId(): string {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `bili-${Date.now()}-${random}`;
+}
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
@@ -32,6 +40,15 @@ export function SearchPage() {
   const [extracting, setExtracting] = useState(false);
   const [extractionResult, setExtractionResult] = useState<ExtractionResult | YoutubeExtractionResult | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
+  const [biliJobId, setBiliJobId] = useState<string | null>(null);
+  const [biliProgress, setBiliProgress] = useState<BiliCollectionExtractionProgress | null>(null);
+  const [biliCancelRequested, setBiliCancelRequested] = useState(false);
+  const biliJobIdRef = useRef<string | null>(null);
+  const biliProgressState = buildBiliExtractionProgressState({
+    extracting: extracting && biliJobId !== null,
+    progress: biliProgress,
+    cancelRequested: biliCancelRequested,
+  });
 
   const { data: sources } = useQuery({
     queryKey: ["sources"],
@@ -101,17 +118,37 @@ export function SearchPage() {
   }
 
   async function handleBiliExtract() {
+    const jobId = createBiliExtractionJobId();
+    biliJobIdRef.current = jobId;
+    setBiliJobId(jobId);
+    setBiliProgress(null);
+    setBiliCancelRequested(false);
     setExtracting(true);
     setExtractionError(null);
     setExtractionResult(null);
     setSearchTerm(""); // clear normal search
     try {
-      const result = await tauri.biliExtractAudio({ url: query.trim() });
+      const result = await tauri.biliExtractAudio({ url: query.trim(), jobId });
       setExtractionResult(result);
     } catch (e) {
       setExtractionError(String(e));
     } finally {
       setExtracting(false);
+      setBiliJobId(null);
+      setBiliProgress(null);
+      setBiliCancelRequested(false);
+      biliJobIdRef.current = null;
+    }
+  }
+
+  async function handleCancelBiliExtraction() {
+    if (!biliJobId || biliCancelRequested) return;
+    setBiliCancelRequested(true);
+    try {
+      await tauri.biliCancelExtraction({ jobId: biliJobId });
+    } catch (e) {
+      setExtractionError(`Cancel request failed: ${String(e)}`);
+      setBiliCancelRequested(false);
     }
   }
 
@@ -140,6 +177,33 @@ export function SearchPage() {
   useEffect(() => {
     savedSearch.current = false;
   }, [searchTerm]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+
+    listen<BiliCollectionExtractionProgressEvent>(
+      BILI_COLLECTION_PROGRESS_EVENT,
+      (event) => {
+        const activeJobId = biliJobIdRef.current;
+        if (!activeJobId || event.payload.jobId !== activeJobId) return;
+        setBiliProgress(event.payload);
+      }
+    ).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    }).catch((e) => {
+      setExtractionError(`Bilibili progress listener failed: ${String(e)}`);
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Save search to history only once (first page)
   useEffect(() => {
@@ -287,6 +351,33 @@ export function SearchPage() {
 
       <div className="flex-1 overflow-y-auto p-6">
         {/* Extraction results (Bilibili / YouTube) */}
+        {biliProgressState.show && (
+          <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-primary" />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {biliProgressState.label}
+              </span>
+              {biliProgressState.canCancel && (
+                <button
+                  type="button"
+                  onClick={handleCancelBiliExtraction}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                  title="Cancel extraction"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              )}
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                style={{ width: `${biliProgressState.percent}%` }}
+              />
+            </div>
+          </div>
+        )}
         {extractionResult && 'extractionType' in extractionResult && (
           <BiliExtractionResult result={extractionResult as ExtractionResult} />
         )}

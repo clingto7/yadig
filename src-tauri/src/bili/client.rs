@@ -73,6 +73,14 @@ pub struct FavoriteFolderDeleteRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionExtractionProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub current_title: Option<String>,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FavoriteWriteErrorKind {
     Failed,
     Blocked,
@@ -998,12 +1006,49 @@ impl BiliClient {
         season_id: i64,
         download_dir: &std::path::Path,
     ) -> Result<ExtractionResult> {
+        self.extract_collection_with_progress(mid, season_id, download_dir, |_| {}, || false)
+            .await
+    }
+
+    pub async fn extract_collection_with_progress<F, C>(
+        &self,
+        mid: i64,
+        season_id: i64,
+        download_dir: &std::path::Path,
+        mut on_progress: F,
+        is_cancelled: C,
+    ) -> Result<ExtractionResult>
+    where
+        F: FnMut(CollectionExtractionProgress),
+        C: Fn() -> bool,
+    {
         let season = self.season_archives(mid, season_id).await?;
         let safe_title = sanitize_filename(&season.meta.name);
         let collection_dir = download_dir.join(&safe_title);
+        let total = season.archives.len();
 
         let mut segments = Vec::new();
+        let mut completed = 0usize;
+        let mut cancelled = false;
+        on_progress(CollectionExtractionProgress {
+            completed,
+            total,
+            current_title: None,
+            cancelled,
+        });
+
         for archive in &season.archives {
+            if is_cancelled() {
+                cancelled = true;
+                on_progress(CollectionExtractionProgress {
+                    completed,
+                    total,
+                    current_title: None,
+                    cancelled,
+                });
+                break;
+            }
+
             // Fetch video info to get the first page's cid
             let info = self.video_info(&archive.bvid).await?;
             let page_info = info
@@ -1027,13 +1072,35 @@ impl BiliClient {
                     eprintln!("Failed to extract {}: {}", archive.bvid, e);
                 }
             }
+
+            completed += 1;
+            cancelled = is_cancelled();
+            on_progress(CollectionExtractionProgress {
+                completed,
+                total,
+                current_title: Some(archive.title.clone()),
+                cancelled,
+            });
+
+            if cancelled {
+                break;
+            }
         }
+
+        let warnings = if cancelled {
+            vec![format!(
+                "Collection extraction cancelled after {}/{} videos.",
+                completed, total
+            )]
+        } else {
+            Vec::new()
+        };
 
         Ok(ExtractionResult {
             video_title: season.meta.name,
             segments,
             extraction_type: ExtractionType::Collection,
-            warnings: Vec::new(),
+            warnings,
         })
     }
 

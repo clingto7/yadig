@@ -1,9 +1,52 @@
 use crate::bili::auth::{BiliAuth, BiliSession};
-use crate::bili::client::BiliClient;
+use crate::bili::client::{BiliClient, CollectionExtractionProgress};
 use crate::bili::extractor::ExtractionResult;
 use crate::bili::session::login_session_from_cookie_input;
+use crate::bili::url::{parse_bilibili_url, BiliUrl};
 use crate::error::{Result, YadigError};
-use tauri::State;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, State};
+
+pub const BILI_COLLECTION_PROGRESS_EVENT: &str = "bili://collection-progress";
+
+#[derive(Default)]
+pub struct BiliExtractionJobs {
+    cancelled: Mutex<HashSet<String>>,
+}
+
+impl BiliExtractionJobs {
+    pub fn start_job(&self, job_id: &str) {
+        let mut cancelled = self.cancelled.lock().expect("bili extraction jobs lock");
+        cancelled.remove(job_id);
+    }
+
+    pub fn cancel_job(&self, job_id: &str) {
+        let mut cancelled = self.cancelled.lock().expect("bili extraction jobs lock");
+        cancelled.insert(job_id.to_string());
+    }
+
+    pub fn finish_job(&self, job_id: &str) {
+        let mut cancelled = self.cancelled.lock().expect("bili extraction jobs lock");
+        cancelled.remove(job_id);
+    }
+
+    pub fn is_cancelled(&self, job_id: &str) -> bool {
+        let cancelled = self.cancelled.lock().expect("bili extraction jobs lock");
+        cancelled.contains(job_id)
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiliCollectionExtractionProgressEvent {
+    pub job_id: String,
+    pub completed: usize,
+    pub total: usize,
+    pub current_title: Option<String>,
+    pub cancelled: bool,
+}
 
 /// Response for QR login start
 #[derive(serde::Serialize)]
@@ -308,16 +351,67 @@ pub struct PlayUrlInfo {
     pub bandwidth: i64,
 }
 
+async fn extract_collection_for_job(
+    client: &BiliClient,
+    app: &AppHandle,
+    jobs: &BiliExtractionJobs,
+    job_id: &str,
+    mid: i64,
+    season_id: i64,
+    download_dir: &Path,
+) -> Result<ExtractionResult> {
+    jobs.start_job(job_id);
+    let result = client
+        .extract_collection_with_progress(
+            mid,
+            season_id,
+            download_dir,
+            |progress: CollectionExtractionProgress| {
+                let payload = BiliCollectionExtractionProgressEvent {
+                    job_id: job_id.to_string(),
+                    completed: progress.completed,
+                    total: progress.total,
+                    current_title: progress.current_title,
+                    cancelled: progress.cancelled,
+                };
+                let _ = app.emit(BILI_COLLECTION_PROGRESS_EVENT, payload);
+            },
+            || jobs.is_cancelled(job_id),
+        )
+        .await;
+    jobs.finish_job(job_id);
+    result
+}
+
 /// Extract audio from a Bilibili video URL and save to Downloads.
 #[tauri::command]
 pub async fn bili_extract_audio(
     auth: State<'_, BiliAuth>,
+    jobs: State<'_, BiliExtractionJobs>,
+    app: AppHandle,
     url: String,
+    job_id: Option<String>,
 ) -> Result<ExtractionResult> {
     let client = BiliClient::new((*auth).clone());
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
     let download_dir = downloads.join("yadig");
+
+    if let Some(job_id) = job_id.as_deref() {
+        if let BiliUrl::Collection { mid, season_id } = parse_bilibili_url(&url)? {
+            return extract_collection_for_job(
+                &client,
+                &app,
+                jobs.inner(),
+                job_id,
+                mid,
+                season_id,
+                &download_dir,
+            )
+            .await;
+        }
+    }
+
     client.extract_audio(&url, &download_dir).await
 }
 
@@ -342,16 +436,40 @@ pub async fn bili_extract_segment(
 #[tauri::command]
 pub async fn bili_extract_collection(
     auth: State<'_, BiliAuth>,
+    jobs: State<'_, BiliExtractionJobs>,
+    app: AppHandle,
     mid: i64,
     season_id: i64,
+    job_id: Option<String>,
 ) -> Result<ExtractionResult> {
     let client = BiliClient::new((*auth).clone());
     let downloads = dirs_next::download_dir()
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
     let download_dir = downloads.join("yadig");
+    if let Some(job_id) = job_id.as_deref() {
+        return extract_collection_for_job(
+            &client,
+            &app,
+            jobs.inner(),
+            job_id,
+            mid,
+            season_id,
+            &download_dir,
+        )
+        .await;
+    }
     client
         .extract_collection(mid, season_id, &download_dir)
         .await
+}
+
+#[tauri::command]
+pub async fn bili_cancel_extraction(
+    jobs: State<'_, BiliExtractionJobs>,
+    job_id: String,
+) -> Result<()> {
+    jobs.cancel_job(&job_id);
+    Ok(())
 }
 
 /// Check if FFmpeg is available for chapter splitting.
@@ -406,7 +524,8 @@ fn qr_poll_status_summary(data: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_url_param, qr_poll_status_summary, restore_persisted_session, QrLoginStartResponse,
+        extract_url_param, qr_poll_status_summary, restore_persisted_session,
+        BiliCollectionExtractionProgressEvent, BiliExtractionJobs, QrLoginStartResponse,
         SessionStatusResponse,
     };
     use crate::bili::auth::{BiliAuth, BiliSession};
@@ -529,5 +648,39 @@ mod tests {
         assert!(!summary.contains("secret"));
         assert!(!summary.contains("bili_jct"));
         assert!(!summary.contains("DedeUserID"));
+    }
+
+    #[test]
+    fn extraction_job_state_tracks_cancelled_jobs() {
+        let jobs = BiliExtractionJobs::default();
+
+        jobs.start_job("job-1");
+        assert!(!jobs.is_cancelled("job-1"));
+
+        jobs.cancel_job("job-1");
+        assert!(jobs.is_cancelled("job-1"));
+
+        jobs.finish_job("job-1");
+        assert!(!jobs.is_cancelled("job-1"));
+    }
+
+    #[test]
+    fn collection_progress_event_matches_frontend_camel_case_contract() {
+        let event = serde_json::to_value(BiliCollectionExtractionProgressEvent {
+            job_id: "job-1".to_string(),
+            completed: 3,
+            total: 10,
+            current_title: Some("Track 3".to_string()),
+            cancelled: false,
+        })
+        .unwrap();
+
+        assert_eq!(event["jobId"], json!("job-1"));
+        assert_eq!(event["currentTitle"], json!("Track 3"));
+        assert_eq!(event["completed"], json!(3));
+        assert_eq!(event["total"], json!(10));
+        assert_eq!(event["cancelled"], json!(false));
+        assert!(event.get("job_id").is_none());
+        assert!(event.get("current_title").is_none());
     }
 }
