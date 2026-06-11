@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
 import { Brain, Clock3, Download, FolderInput, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
+  buildClassificationProgress,
+  chunkClassificationItems,
+  formatClassificationProgress,
+  type ClassificationProgress,
+} from "@/lib/llm-classification-progress";
+import {
   tauri,
   type FavoriteOperationAction,
   type LibraryCollection,
@@ -94,8 +100,20 @@ function formatHistoryTime(value: string) {
   return date.toLocaleString();
 }
 
+function sanitizeLlmError(error: string | null | undefined): string | null {
+  const sanitized = sanitizeOperationError(error)
+    ?.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/(api[_-]?key=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/(token=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\btp-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .trim();
+
+  return sanitized || null;
+}
+
 function safeErrorMessage(prefix: string, err: unknown) {
-  return `${prefix}: ${sanitizeOperationError(String(err)) ?? "Unknown error"}`;
+  return `${prefix}: ${sanitizeLlmError(String(err)) ?? "Unknown error"}`;
 }
 
 export function WorkstationPage() {
@@ -112,6 +130,7 @@ export function WorkstationPage() {
   const [instruction, setInstruction] = useState("请按领域给这些 B 站资源分类，并标出适合批量提取音频的音乐类视频。");
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [classificationProgress, setClassificationProgress] = useState<ClassificationProgress | null>(null);
 
   const analysisById = useMemo(() => {
     return new Map(classifications.map((analysis) => [analysis.externalId, analysis]));
@@ -268,34 +287,110 @@ export function WorkstationPage() {
       return;
     }
 
+    const chunks = chunkClassificationItems(classificationItems);
     setBusy(mode === "llm" ? "classify-llm" : "classify-local");
     setMessage(null);
+    setClassificationProgress(buildClassificationProgress({
+      mode,
+      stage: "preparing",
+      currentChunk: 0,
+      totalChunks: chunks.length,
+      processedItems: 0,
+      totalItems: classificationItems.length,
+      savedItems: 0,
+      failedChunks: 0,
+      latestError: null,
+    }));
+
     try {
       const provider = mode === "llm"
         ? await loadLlmProvider()
         : null;
-      const result = await tauri.llmClassifyItems({
-        instruction,
-        items: classificationItems,
-        provider,
-        mode,
-      });
-      await saveLlmClassifications(classificationItems, result.items);
+
+      let processedItems = 0;
+      let savedItems = 0;
+      let failedChunks = 0;
+      let firstFailure: string | null = null;
+
+      for (const [chunkIndex, chunkItems] of chunks.entries()) {
+        const currentChunk = chunkIndex + 1;
+        setClassificationProgress(buildClassificationProgress({
+          mode,
+          stage: "requesting",
+          currentChunk,
+          totalChunks: chunks.length,
+          processedItems,
+          totalItems: classificationItems.length,
+          savedItems,
+          failedChunks,
+          currentChunkItemCount: chunkItems.length,
+          latestError: null,
+        }));
+
+        const result = await tauri.llmClassifyItems({
+          instruction,
+          items: chunkItems,
+          provider,
+          mode,
+        });
+
+        failedChunks += result.chunkFailures.length;
+        firstFailure ??= sanitizeLlmError(result.chunkFailures[0]?.error);
+
+        setClassificationProgress(buildClassificationProgress({
+          mode,
+          stage: "saving",
+          currentChunk,
+          totalChunks: chunks.length,
+          processedItems,
+          totalItems: classificationItems.length,
+          savedItems,
+          failedChunks,
+          currentChunkItemCount: chunkItems.length,
+          latestError: firstFailure,
+        }));
+
+        await saveLlmClassifications(chunkItems, result.items);
+        processedItems += chunkItems.length;
+        savedItems += result.items.length;
+
+        const storedChunkClassifications = await listLatestLlmClassifications();
+        setClassifications(storedChunkClassifications);
+      }
+
       const storedClassifications = await listLatestLlmClassifications();
       setClassifications(storedClassifications);
       setPlan(null);
-      const failedCount = result.chunkFailures.length;
       const sourceLabel = mode === "llm" ? "LLM" : "local metadata";
-      const firstFailure = result.chunkFailures[0];
+      setClassificationProgress(buildClassificationProgress({
+        mode,
+        stage: "completed",
+        currentChunk: chunks.length,
+        totalChunks: chunks.length,
+        processedItems,
+        totalItems: classificationItems.length,
+        savedItems,
+        failedChunks,
+        latestError: firstFailure,
+      }));
       setMessage(
-        `${sourceLabel} classified ${result.items.length}/${classificationItems.length} favorite items${
+        `${sourceLabel} classified and saved ${savedItems}/${classificationItems.length} favorite items${
           firstFailure
-            ? `; ${failedCount} chunk${failedCount === 1 ? "" : "s"} failed: ${firstFailure.error}`
+            ? `; ${failedChunks} chunk${failedChunks === 1 ? "" : "s"} failed: ${firstFailure}`
             : "."
         }`
       );
     } catch (err) {
-      setMessage(safeErrorMessage("Classification failed", err));
+      const error = sanitizeLlmError(String(err));
+      setClassificationProgress((current) => current
+        ? buildClassificationProgress({
+            ...current,
+            stage: "failed",
+            latestError: error,
+          })
+        : null
+      );
+      setMessage(`Classification failed: ${error ?? "Unknown error"}`);
     } finally {
       setBusy(null);
     }
@@ -545,6 +640,30 @@ export function WorkstationPage() {
                   {busy === "classify-local" ? "Classifying" : "Local Metadata"}
                 </button>
               </div>
+              {classificationProgress && (
+                <div className="mt-3 rounded-md border border-border bg-secondary/40 p-3 text-sm text-muted-foreground">
+                  <div className="flex items-start justify-between gap-3">
+                    <span>{formatClassificationProgress(classificationProgress)}</span>
+                    <span className="shrink-0 text-xs">
+                      {classificationProgress.savedItems}/{classificationProgress.totalItems}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-background">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all"
+                      style={{
+                        width: `${
+                          classificationProgress.totalItems > 0
+                            ? Math.round(
+                                (classificationProgress.processedItems / classificationProgress.totalItems) * 100
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="rounded-lg border border-border bg-card p-4">
