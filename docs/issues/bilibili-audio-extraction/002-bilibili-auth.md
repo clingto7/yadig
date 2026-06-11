@@ -30,7 +30,7 @@ Implement Bilibili authentication with two login methods, session persistence, a
 - [x] Session persists across app restarts (loaded from tauri-plugin-store)
 - [x] `bili_session_status` returns correct login state after restart
 - [x] `bili_logout` clears both in-memory and persisted session
-- [ ] Auth errors (expired session, invalid cookie) return user-friendly messages
+- [x] Auth errors (expired session, invalid cookie) return user-friendly messages
 - [x] `cargo check` passes with all new commands registered
 
 ## Notes
@@ -39,6 +39,7 @@ Implement Bilibili authentication with two login methods, session persistence, a
 - Startup restore is implemented in `src/App.tsx` through `bili_restore_session`, followed by `bili_session_status`.
 - Logout clears Rust auth state through `bili_logout` and deletes both current and legacy persisted session keys.
 - Cookie login accepts either a raw SESSDATA value or a full browser Cookie header; full Cookie input preserves `bili_jct` and `DedeUserID` for write-capable sessions.
+- Settings UI login failures now pass through `formatBiliLoginError`, which maps Cookie/QR/password/logout failures to user-friendly messages and avoids exposing cookie, CSRF, callback, or user-id fragments.
 - Backend command registration is covered by `cargo check --manifest-path src-tauri/Cargo.toml`.
 
 ## Blocked by

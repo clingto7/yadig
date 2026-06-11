@@ -25,7 +25,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 - [x] Logout clears session and UI updates
 - [x] QR code expiration is handled with a "Refresh QR Code" button
 - [x] Account tier (premium/standard) is displayed
-- [ ] Error messages are user-friendly (not raw API errors)
+- [x] Error messages are user-friendly (not raw API errors)
 - [x] `pnpm build` passes
 
 ## Notes
@@ -35,6 +35,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 - Cookie login calls `bili_cookie_login`, saves the returned session to Tauri Store, hides the Cookie form, and refreshes login status.
 - QR login expiration now uses `src/lib/bili-login-ui.ts` state mapping and shows an explicit `Refresh QR Code` button.
 - Account tier is displayed from `bili_session_status` as Premium or standard max-quality copy.
+- Login error messages now use `formatBiliLoginError` for QR, Cookie, password, and logout paths, with contract coverage for network, CAPTCHA/risk, missing SESSDATA, and sensitive-fragment redaction.
 - Verified with `pnpm build`.
 
 ## Blocked by

@@ -5,7 +5,7 @@ import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
 import type { LlmProviderTestError, LlmProviderTestErrorKind } from "@/lib/tauri";
 import { clearPersistedBiliSession, savePersistedBiliSession } from "@/lib/bili-session-store";
-import { biliAccountTierLabel, qrLoginUiState } from "@/lib/bili-login-ui";
+import { biliAccountTierLabel, formatBiliLoginError, qrLoginUiState } from "@/lib/bili-login-ui";
 
 const DEFAULT_LLM_PROVIDER = "openai-compatible";
 const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
@@ -403,7 +403,7 @@ function BiliLoginSection() {
           setQrExpired(ui.expired);
         }
       } catch (e) {
-        setQrStatus(`Error: ${e}`);
+        setQrStatus(formatBiliLoginError("qr-poll", e));
         setQrExpired(false);
         clearInterval(interval);
       }
@@ -431,7 +431,7 @@ function BiliLoginSection() {
       });
       setQrImg(dataUrl);
     } catch (e) {
-      setError(`Failed to start QR login: ${e}`);
+      setError(formatBiliLoginError("qr-start", e));
     }
   }
 
@@ -444,7 +444,7 @@ function BiliLoginSection() {
       setShowCookieInput(false);
       await checkStatus();
     } catch (e) {
-      setError(`Cookie login failed: ${e}`);
+      setError(formatBiliLoginError("cookie", e));
     }
   }
 
@@ -458,7 +458,7 @@ function BiliLoginSection() {
       setShowPasswordInput(false);
       await checkStatus();
     } catch (e) {
-      setError(`Password login failed: ${e}`);
+      setError(formatBiliLoginError("password", e));
     }
   }
 
@@ -468,7 +468,7 @@ function BiliLoginSection() {
       await clearPersistedBiliSession();
       await checkStatus();
     } catch (e) {
-      setError(`Logout failed: ${e}`);
+      setError(formatBiliLoginError("logout", e));
     }
   }
 
