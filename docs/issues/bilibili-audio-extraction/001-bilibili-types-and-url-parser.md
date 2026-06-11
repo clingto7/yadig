@@ -20,13 +20,18 @@ All four components are pure logic with no network or Tauri dependencies — ful
 
 ## Acceptance criteria
 
-- [ ] `bili_types` module compiles and deserializes sample Bilibili JSON responses (provide test fixtures)
-- [ ] `parse_bilibili_url` correctly extracts bvid, page number, mid, season_id from all supported URL formats
-- [ ] `parse_bilibili_url` rejects non-Bilibili URLs with a clear error
-- [ ] `detect_structure` correctly classifies: single video (1 page, no ugc_season), multi-part (N pages), chapters (1 page + view_points), collection (has ugc_season)
-- [ ] `select_best_audio` picks 192K for logged-in users, 64K for anonymous, Dolby/Hi-Res for premium
-- [ ] All pure functions have unit tests with fixture data
-- [ ] `cargo test` passes
+- [x] `bili_types` module compiles and deserializes sample Bilibili JSON responses (provide test fixtures)
+- [x] `parse_bilibili_url` correctly extracts bvid, page number, mid, season_id from all supported URL formats
+- [x] `parse_bilibili_url` rejects non-Bilibili URLs with a clear error
+- [x] `detect_structure` correctly classifies: single video (1 page, no ugc_season), multi-part (N pages), chapters (1 page + view_points), collection (has ugc_season)
+- [x] `select_best_audio` picks 192K for logged-in users, 64K for anonymous, Dolby/Hi-Res for premium
+- [x] All pure functions have unit tests with fixture data
+- [x] `cargo test` passes
+
+## Notes
+
+- Implemented in `src-tauri/src/bili/types.rs`, `src-tauri/src/bili/url.rs`, `src-tauri/src/bili/extractor.rs`, and the typed Bilibili search parser in `src-tauri/src/source/api/bilibili.rs`.
+- Verification covers Bilibili type fixtures, URL parsing, structure detection including `view_points` chapters, quality selection, and typed search response parsing.
 
 ## Blocked by
 

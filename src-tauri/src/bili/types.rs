@@ -11,6 +11,8 @@ pub struct VideoInfo {
     pub videos: u32,
     pub pages: Vec<Page>,
     #[serde(default)]
+    pub view_points: Vec<ViewPoint>,
+    #[serde(default)]
     pub ugc_season: Option<UgcSeason>,
 }
 
@@ -105,6 +107,38 @@ pub struct SeasonMeta {
     pub total: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub code: i32,
+    pub message: String,
+    #[serde(default)]
+    pub data: Option<SearchData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchData {
+    #[serde(default)]
+    pub result: Vec<SearchResultItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultItem {
+    #[serde(default)]
+    pub bvid: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub duration: Option<String>,
+    #[serde(default)]
+    pub pic: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub id: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +195,26 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_video_info_with_view_points() {
+        let json = r#"{
+            "bvid": "BV1chapter",
+            "aid": 2,
+            "title": "Chapter Video",
+            "videos": 1,
+            "pages": [{"cid": 20, "page": 1, "part": "Main", "duration": 240}],
+            "view_points": [
+                {"content": "Intro", "from": 0.0, "to": 60.5},
+                {"content": "Main", "from": 60.5, "to": 240.0}
+            ]
+        }"#;
+        let info: VideoInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.view_points.len(), 2);
+        assert_eq!(info.view_points[0].content, "Intro");
+        assert_eq!(info.view_points[0].from, 0.0);
+        assert_eq!(info.view_points[1].to, 240.0);
+    }
+
+    #[test]
     fn deserialize_dash_audio() {
         let json = r#"{
             "id": 30280,
@@ -171,6 +225,49 @@ mod tests {
         let audio: DashAudio = serde_json::from_str(json).unwrap();
         assert_eq!(audio.id, 30280);
         assert_eq!(audio.bandwidth, 192000);
+    }
+
+    #[test]
+    fn deserialize_search_response() {
+        let json = r#"{
+            "code": 0,
+            "message": "0",
+            "data": {
+                "result": [
+                    {
+                        "bvid": "BV1search",
+                        "title": "Search <em>Hit</em>",
+                        "author": "Uploader",
+                        "duration": "03:45",
+                        "pic": "//i0.hdslb.com/bfs/archive/test.jpg",
+                        "description": "A search result",
+                        "id": 123456
+                    }
+                ]
+            }
+        }"#;
+        let response: SearchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, 0);
+        let data = response.data.unwrap();
+        assert_eq!(data.result.len(), 1);
+        let item = &data.result[0];
+        assert_eq!(item.bvid.as_deref(), Some("BV1search"));
+        assert_eq!(item.title.as_deref(), Some("Search <em>Hit</em>"));
+        assert_eq!(item.author.as_deref(), Some("Uploader"));
+        assert_eq!(item.duration.as_deref(), Some("03:45"));
+        assert_eq!(item.id, Some(123456));
+    }
+
+    #[test]
+    fn deserialize_search_error_response_without_data() {
+        let json = r#"{
+            "code": -400,
+            "message": "bad request"
+        }"#;
+        let response: SearchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.code, -400);
+        assert_eq!(response.message, "bad request");
+        assert!(response.data.is_none());
     }
 
     #[test]

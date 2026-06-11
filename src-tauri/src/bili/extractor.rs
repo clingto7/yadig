@@ -1,5 +1,5 @@
+use crate::bili::types::{DashAudio, Page, UgcSeason, VideoInfo};
 use serde::{Deserialize, Serialize};
-use crate::bili::types::{DashAudio, Page, UgcSeason, Section, Episode, VideoInfo};
 
 /// A single extracted audio segment with its metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +39,9 @@ pub fn detect_structure(info: &VideoInfo) -> ExtractionType {
     }
     if info.pages.len() > 1 {
         return ExtractionType::MultiPart;
+    }
+    if !info.view_points.is_empty() {
+        return ExtractionType::Chapters;
     }
     ExtractionType::Single
 }
@@ -84,12 +87,18 @@ fn make_video_info(pages: Vec<Page>, ugc_season: Option<UgcSeason>) -> VideoInfo
         title: "Test Video".to_string(),
         videos: pages.len() as u32,
         pages,
+        view_points: Vec::new(),
         ugc_season,
     }
 }
 
 fn make_page(cid: i64, part: &str, duration: u32) -> Page {
-    Page { cid, page: 1, part: part.to_string(), duration }
+    Page {
+        cid,
+        page: 1,
+        part: part.to_string(),
+        duration,
+    }
 }
 
 fn make_audio(id: i32, bandwidth: i64) -> DashAudio {
@@ -104,11 +113,30 @@ fn make_audio(id: i32, bandwidth: i64) -> DashAudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bili::types::{Episode, Section};
 
     #[test]
     fn detect_single_video() {
         let info = make_video_info(vec![make_page(1, "Full Video", 300)], None);
         assert_eq!(detect_structure(&info), ExtractionType::Single);
+    }
+
+    #[test]
+    fn detect_chapter_video() {
+        let mut info = make_video_info(vec![make_page(1, "Full Video", 300)], None);
+        info.view_points = vec![
+            crate::bili::types::ViewPoint {
+                content: "Intro".to_string(),
+                from: 0.0,
+                to: 60.0,
+            },
+            crate::bili::types::ViewPoint {
+                content: "Main".to_string(),
+                from: 60.0,
+                to: 300.0,
+            },
+        ];
+        assert_eq!(detect_structure(&info), ExtractionType::Chapters);
     }
 
     #[test]
@@ -131,8 +159,18 @@ mod tests {
             title: "My Album".to_string(),
             sections: vec![Section {
                 episodes: vec![
-                    Episode { aid: 1, bvid: "BV1a".to_string(), cid: 10, title: "Track 1".to_string() },
-                    Episode { aid: 2, bvid: "BV1b".to_string(), cid: 20, title: "Track 2".to_string() },
+                    Episode {
+                        aid: 1,
+                        bvid: "BV1a".to_string(),
+                        cid: 10,
+                        title: "Track 1".to_string(),
+                    },
+                    Episode {
+                        aid: 2,
+                        bvid: "BV1b".to_string(),
+                        cid: 20,
+                        title: "Track 2".to_string(),
+                    },
                 ],
             }],
         };
@@ -156,7 +194,11 @@ mod tests {
 
     #[test]
     fn select_best_audio_premium() {
-        let streams = vec![make_audio(30216, 64000), make_audio(30280, 192000), make_audio(30251, 320000)];
+        let streams = vec![
+            make_audio(30216, 64000),
+            make_audio(30280, 192000),
+            make_audio(30251, 320000),
+        ];
         let best = select_best_audio(&streams, true, true).unwrap();
         assert_eq!(best.id, 30251); // premium gets Hi-Res
     }

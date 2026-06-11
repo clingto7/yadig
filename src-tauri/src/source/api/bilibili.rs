@@ -1,9 +1,10 @@
-use async_trait::async_trait;
 use crate::bili::auth::BiliAuth;
+use crate::bili::types::SearchResponse;
 use crate::error::{Result, YadigError};
 use crate::http_client;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
+use async_trait::async_trait;
 
 /// Bilibili search source — searches Bilibili for music videos.
 /// Audio streams are not pre-fetched (too slow); use bili_get_playurl on demand.
@@ -23,10 +24,18 @@ impl BiliSource {
 
 #[async_trait]
 impl SourceProvider for BiliSource {
-    fn id(&self) -> &str { "bilibili" }
-    fn name(&self) -> &str { "Bilibili" }
-    fn kind(&self) -> SourceKind { SourceKind::Api }
-    fn base_url(&self) -> &str { "https://www.bilibili.com" }
+    fn id(&self) -> &str {
+        "bilibili"
+    }
+    fn name(&self) -> &str {
+        "Bilibili"
+    }
+    fn kind(&self) -> SourceKind {
+        SourceKind::Api
+    }
+    fn base_url(&self) -> &str {
+        "https://www.bilibili.com"
+    }
 
     async fn search(&self, query: &str, limit: usize, _page: usize) -> Result<Vec<ContentItem>> {
         let encoded = urlencoding::encode(query);
@@ -35,48 +44,59 @@ impl SourceProvider for BiliSource {
             encoded, limit.min(50)
         );
 
-        let mut req = self.client.get(&api_url)
+        let mut req = self
+            .client
+            .get(&api_url)
             .header("Referer", "https://www.bilibili.com");
         if let Some(session) = self.auth.session() {
             req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
         }
 
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| YadigError::Network(format!("Bilibili search failed: {}", e)))?;
 
-        let data: serde_json::Value = resp.json().await
+        let data: SearchResponse = resp
+            .json()
+            .await
             .map_err(|e| YadigError::Network(format!("Bilibili search parse error: {}", e)))?;
 
-        if data["code"].as_i64().unwrap_or(-1) != 0 {
-            let msg = data["message"].as_str().unwrap_or("unknown error");
-            return Err(YadigError::Network(format!("Bilibili search API error: {}", msg)));
+        if data.code != 0 {
+            return Err(YadigError::Network(format!(
+                "Bilibili search API error: {}",
+                data.message
+            )));
         }
 
-        let empty = vec![];
-        let results = data["data"]["result"].as_array().unwrap_or(&empty);
+        let results = data.data.map(|data| data.result).unwrap_or_default();
 
         let items: Vec<ContentItem> = results
-            .iter()
+            .into_iter()
             .enumerate()
             .filter_map(|(i, r)| {
-                let bvid = r["bvid"].as_str()?;
-                let title_html = r["title"].as_str().unwrap_or("");
+                let bvid = r.bvid?;
+                let title_html = r.title.unwrap_or_default();
                 // Strip HTML tags from title
-                let title = strip_html_tags(title_html);
-                let author = r["author"].as_str().map(String::from);
-                let duration_str = r["duration"].as_str().unwrap_or("0:00");
+                let title = strip_html_tags(&title_html);
+                let author = r.author;
+                let duration_str = r.duration.as_deref().unwrap_or("0:00");
                 let duration = parse_duration(duration_str);
-                let pic = r["pic"].as_str().map(|p| {
-                    if p.starts_with("//") { format!("https:{}", p) } else { p.to_string() }
+                let pic = r.pic.map(|p| {
+                    if p.starts_with("//") {
+                        format!("https:{}", p)
+                    } else {
+                        p.to_string()
+                    }
                 });
                 let url = format!("https://www.bilibili.com/video/{}", bvid);
-                let cid = r["id"].as_i64().unwrap_or(0);
+                let cid = r.id.unwrap_or(0);
 
                 Some(ContentItem {
                     source_id: "bilibili".to_string(),
                     title,
                     url,
-                    summary: r["description"].as_str().map(String::from),
+                    summary: r.description,
                     author,
                     published_at: None,
                     image_url: pic,
