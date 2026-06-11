@@ -135,6 +135,7 @@ pub enum OperationPlanKind {
     BiliBatchDelete,
     BiliFavoriteFolderCreate,
     BiliFavoriteFolderRename,
+    BiliFavoriteFolderDelete,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,13 +215,12 @@ impl OperationPlan {
                 } else if matches!(
                     request.action,
                     FavoriteOperationAction::Copy | FavoriteOperationAction::Move
-                )
-                    && request
-                        .target_collection_external_id
-                        .as_deref()
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .is_empty()
+                ) && request
+                    .target_collection_external_id
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
                 {
                     (
                         "blocked".to_string(),
@@ -232,18 +232,20 @@ impl OperationPlan {
                 } else if matches!(
                     request.action,
                     FavoriteOperationAction::Copy | FavoriteOperationAction::Move
-                )
-                    && candidate.source_collection_external_id
-                        == request.target_collection_external_id
+                ) && candidate.source_collection_external_id
+                    == request.target_collection_external_id
                 {
                     (
                         "skipped".to_string(),
                         Some("Item is already in the target favorite folder".to_string()),
                     )
                 } else if request.action == FavoriteOperationAction::Copy
-                    && candidate.collection_external_ids.iter().any(|collection_id| {
-                        Some(collection_id) == request.target_collection_external_id.as_ref()
-                    })
+                    && candidate
+                        .collection_external_ids
+                        .iter()
+                        .any(|collection_id| {
+                            Some(collection_id) == request.target_collection_external_id.as_ref()
+                        })
                 {
                     (
                         "skipped".to_string(),
@@ -318,7 +320,7 @@ impl OperationPlan {
         let new_title = request.new_title.trim().to_string();
         let media_id = folder.external_id.trim().to_string();
         let metadata = rename_metadata_from_folder(&folder.raw_metadata);
-        let mutation_blocker = favorite_folder_mutation_blocker(&folder);
+        let mutation_blocker = favorite_folder_mutation_blocker(&folder, "rename");
         let (status, error) = if media_id.is_empty() {
             (
                 "blocked".to_string(),
@@ -371,6 +373,66 @@ impl OperationPlan {
                 } else {
                     Some(new_title)
                 },
+                resource_id: None,
+                resource_type: None,
+                metadata,
+            }],
+        }
+    }
+
+    pub fn for_bili_favorite_folder_delete(request: FavoriteFolderDeletePlanRequest) -> Self {
+        let folder = request.folder;
+        let title = folder.title.trim().to_string();
+        let media_id = folder.external_id.trim().to_string();
+        let mutation_blocker = favorite_folder_mutation_blocker(&folder, "delete");
+        let snapshot_last_synced_at = request
+            .snapshot_last_synced_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let metadata = serde_json::json!({
+            "knownItemCount": request.known_item_count,
+            "knownItemTitles": request.known_item_titles,
+            "snapshotLastSyncedAt": snapshot_last_synced_at,
+        });
+        let (status, error) = if media_id.is_empty() {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder id is required".to_string()),
+            )
+        } else if title.is_empty() {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder title is required".to_string()),
+            )
+        } else if let Some(blocker) = mutation_blocker {
+            ("blocked".to_string(), Some(blocker))
+        } else if snapshot_last_synced_at.is_none() {
+            (
+                "blocked".to_string(),
+                Some(
+                    "Favorite folder snapshot freshness is required; resync before deleting"
+                        .to_string(),
+                ),
+            )
+        } else {
+            (pending_status(), None)
+        };
+
+        Self {
+            kind: OperationPlanKind::BiliFavoriteFolderDelete,
+            items: vec![OperationPlanItem {
+                external_id: media_id.clone(),
+                title: title.clone(),
+                action: "delete_folder".to_string(),
+                target: None,
+                status,
+                error,
+                source_collection_external_id: Some(media_id),
+                source_collection_title: Some(title),
+                target_collection_external_id: None,
+                target_collection_title: None,
                 resource_id: None,
                 resource_type: None,
                 metadata,
@@ -493,6 +555,15 @@ pub struct FavoriteFolderRenamePlanRequest {
     pub new_title: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteFolderDeletePlanRequest {
+    pub folder: LibraryCollection,
+    pub known_item_count: usize,
+    pub known_item_titles: Vec<String>,
+    pub snapshot_last_synced_at: Option<String>,
+}
+
 fn rename_metadata_from_folder(raw_metadata: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "intro": raw_metadata.get("intro").cloned().unwrap_or(serde_json::Value::Null),
@@ -501,15 +572,13 @@ fn rename_metadata_from_folder(raw_metadata: &serde_json::Value) -> serde_json::
     })
 }
 
-fn favorite_folder_mutation_blocker(folder: &LibraryCollection) -> Option<String> {
+fn favorite_folder_mutation_blocker(
+    folder: &LibraryCollection,
+    action_label: &str,
+) -> Option<String> {
     let metadata = &folder.raw_metadata;
     let explicit_false_flags = [
-        "can_edit",
-        "canEdit",
-        "editable",
-        "is_owner",
-        "isOwner",
-        "owned",
+        "can_edit", "canEdit", "editable", "is_owner", "isOwner", "owned",
     ];
     if explicit_false_flags
         .iter()
@@ -524,16 +593,16 @@ fn favorite_folder_mutation_blocker(folder: &LibraryCollection) -> Option<String
         .any(|key| metadata.get(*key).and_then(|value| value.as_bool()) == Some(true))
         || folder.title.trim() == "默认收藏夹"
     {
-        return Some("Default favorite folders are not supported for rename".to_string());
+        return Some(format!(
+            "Default favorite folders are not supported for {action_label}"
+        ));
     }
 
     None
 }
 
 fn metadata_has_required_rename_fields(metadata: &serde_json::Value) -> bool {
-    metadata
-        .get("intro")
-        .is_some_and(|value| value.is_string())
+    metadata.get("intro").is_some_and(|value| value.is_string())
         && metadata
             .get("privacy")
             .and_then(|value| {
@@ -673,7 +742,10 @@ mod favorite_operation_plan_tests {
         assert_eq!(item.action, "create_folder");
         assert_eq!(item.title, "Disposable");
         assert_eq!(item.target.as_deref(), Some("1"));
-        assert_eq!(item.target_collection_title.as_deref(), Some("Temporary test folder"));
+        assert_eq!(
+            item.target_collection_title.as_deref(),
+            Some("Temporary test folder")
+        );
         assert_eq!(item.status, "pending");
     }
 
@@ -709,10 +781,11 @@ mod favorite_operation_plan_tests {
             }),
         );
 
-        let plan = OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
-            folder,
-            new_title: "New folder".to_string(),
-        });
+        let plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder,
+                new_title: "New folder".to_string(),
+            });
 
         assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderRename);
         let item = &plan.items[0];
@@ -743,10 +816,11 @@ mod favorite_operation_plan_tests {
             }),
         );
 
-        let plan = OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
-            folder,
-            new_title: "Old folder".to_string(),
-        });
+        let plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder,
+                new_title: "Old folder".to_string(),
+            });
 
         let item = &plan.items[0];
         assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderRename);
@@ -822,6 +896,93 @@ mod favorite_operation_plan_tests {
         assert_eq!(
             uneditable_plan.items[0].error.as_deref(),
             Some("Favorite folder is not editable by the current account")
+        );
+    }
+
+    #[test]
+    fn builds_pending_folder_delete_plan_with_non_empty_impact_metadata() {
+        let folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "Old folder".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "Old folder",
+                "intro": "",
+                "privacy": 1,
+                "media_count": 2
+            }),
+        );
+
+        let plan =
+            OperationPlan::for_bili_favorite_folder_delete(FavoriteFolderDeletePlanRequest {
+                folder,
+                known_item_count: 2,
+                known_item_titles: vec!["Video A".to_string(), "Video B".to_string()],
+                snapshot_last_synced_at: Some("2026-06-11T10:00:00Z".to_string()),
+            });
+
+        assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderDelete);
+        let item = &plan.items[0];
+        assert_eq!(item.action, "delete_folder");
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.external_id, "300");
+        assert_eq!(item.title, "Old folder");
+        assert_eq!(item.source_collection_external_id.as_deref(), Some("300"));
+        assert_eq!(item.source_collection_title.as_deref(), Some("Old folder"));
+        assert_eq!(item.metadata["knownItemCount"].as_u64(), Some(2));
+        assert_eq!(
+            item.metadata["knownItemTitles"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            item.metadata["snapshotLastSyncedAt"].as_str(),
+            Some("2026-06-11T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn blocks_folder_delete_for_default_or_missing_snapshot_freshness() {
+        let default_folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "默认收藏夹".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "默认收藏夹",
+                "is_default": true
+            }),
+        );
+
+        let default_plan =
+            OperationPlan::for_bili_favorite_folder_delete(FavoriteFolderDeletePlanRequest {
+                folder: default_folder,
+                known_item_count: 0,
+                known_item_titles: vec![],
+                snapshot_last_synced_at: Some("2026-06-11T10:00:00Z".to_string()),
+            });
+
+        assert_eq!(default_plan.items[0].status, "blocked");
+        assert_eq!(
+            default_plan.items[0].error.as_deref(),
+            Some("Default favorite folders are not supported for delete")
+        );
+
+        let stale_folder = LibraryCollection::from_bili_favorite_folder(
+            "301".to_string(),
+            "Needs sync".to_string(),
+            serde_json::json!({"id": 301, "title": "Needs sync"}),
+        );
+        let stale_plan =
+            OperationPlan::for_bili_favorite_folder_delete(FavoriteFolderDeletePlanRequest {
+                folder: stale_folder,
+                known_item_count: 0,
+                known_item_titles: vec![],
+                snapshot_last_synced_at: None,
+            });
+
+        assert_eq!(stale_plan.items[0].status, "blocked");
+        assert_eq!(
+            stale_plan.items[0].error.as_deref(),
+            Some("Favorite folder snapshot freshness is required; resync before deleting")
         );
     }
 

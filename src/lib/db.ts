@@ -178,6 +178,7 @@ type LibraryCollectionRow = {
   collection_type: LibraryCollectionType;
   title: string;
   raw_metadata: string;
+  last_synced_at?: string;
 };
 
 type FavoriteOperationCandidateRow = {
@@ -238,6 +239,7 @@ export type BiliFavoriteOperationPlanKind = Extract<
   | "bili_batch_delete"
   | "bili_favorite_folder_create"
   | "bili_favorite_folder_rename"
+  | "bili_favorite_folder_delete"
 >;
 
 export type OperationPlanHistoryItem = OperationPlanItem & {
@@ -283,12 +285,16 @@ function mapLibraryItem(row: LibraryItemRow): LibraryItem {
 }
 
 function mapLibraryCollection(row: LibraryCollectionRow): LibraryCollection {
+  const rawMetadata = parseRawMetadata(row.raw_metadata);
+  if ("last_synced_at" in row && typeof row.last_synced_at === "string") {
+    rawMetadata.snapshotLastSyncedAt = row.last_synced_at;
+  }
   return {
     source: row.source,
     externalId: row.external_id,
     collectionType: row.collection_type,
     title: row.title,
-    rawMetadata: parseRawMetadata(row.raw_metadata),
+    rawMetadata,
   };
 }
 
@@ -591,14 +597,14 @@ export async function listLibraryCollections(
   const d = await getDb();
   const rows = collectionType
     ? await d.select<LibraryCollectionRow[]>(
-        `SELECT source, external_id, collection_type, title, raw_metadata
+        `SELECT source, external_id, collection_type, title, raw_metadata, last_synced_at
          FROM library_collections
          WHERE collection_type = $1
          ORDER BY title COLLATE NOCASE ASC`,
         [collectionType]
       )
     : await d.select<LibraryCollectionRow[]>(
-        `SELECT source, external_id, collection_type, title, raw_metadata
+        `SELECT source, external_id, collection_type, title, raw_metadata, last_synced_at
          FROM library_collections
          ORDER BY collection_type ASC, title COLLATE NOCASE ASC`,
         []
@@ -627,7 +633,8 @@ export async function listLibraryItemsWithCollections(): Promise<LibraryItemWith
             lc.external_id,
             lc.collection_type,
             lc.title,
-            lc.raw_metadata
+            lc.raw_metadata,
+            lc.last_synced_at
      FROM library_item_collections lic
      INNER JOIN library_collections lc ON lc.id = lic.collection_id
      INNER JOIN library_items li ON li.id = lic.item_id
@@ -933,7 +940,7 @@ export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<
   const planRows = await d.select<OperationPlanRow[]>(
     `SELECT id, kind, status, created_at, updated_at
      FROM operation_plans
-     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete', 'bili_favorite_folder_create', 'bili_favorite_folder_rename')
+     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete', 'bili_favorite_folder_create', 'bili_favorite_folder_rename', 'bili_favorite_folder_delete')
      ORDER BY datetime(created_at) DESC, id DESC
      LIMIT $1`,
     [limit]
@@ -1217,6 +1224,39 @@ export async function updateBiliFavoriteFolderFromRenamePlan(plan: OperationPlan
          AND external_id = $3
          AND collection_type = 'bili_favorite_folder'`,
       [newTitle, JSON.stringify(rawMetadata), externalId]
+    );
+  }
+}
+
+export async function deleteBiliFavoriteFolderFromPlan(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_favorite_folder_delete") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const externalId = item.sourceCollectionExternalId?.trim() || item.externalId.trim();
+    if (!externalId) {
+      throw new Error(`Cannot delete local favorite folder ${item.title}: missing folder id`);
+    }
+
+    await d.execute(
+      `DELETE FROM library_item_collections
+       WHERE collection_id IN (
+         SELECT id FROM library_collections
+         WHERE source = 'bilibili'
+           AND external_id = $1
+           AND collection_type = 'bili_favorite_folder'
+       )`,
+      [externalId]
+    );
+
+    await d.execute(
+      `DELETE FROM library_collections
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND collection_type = 'bili_favorite_folder'`,
+      [externalId]
     );
   }
 }

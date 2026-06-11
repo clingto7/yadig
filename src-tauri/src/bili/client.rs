@@ -62,6 +62,11 @@ pub struct FavoriteFolderRenameRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteFolderDeleteRequest {
+    pub media_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FavoriteWriteErrorKind {
     Failed,
     Blocked,
@@ -448,6 +453,47 @@ impl BiliClient {
             kind: FavoriteWriteErrorKind::Failed,
             message: "Bilibili favorite folder rename response could not be normalized".to_string(),
         })
+    }
+
+    pub async fn delete_favorite_folder(
+        &self,
+        request: &FavoriteFolderDeleteRequest,
+    ) -> std::result::Result<(), FavoriteWriteError> {
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/folder/del")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_folder_delete_form(&session, request))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder delete request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder delete response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        Ok(())
     }
 
     async fn favorite_library_snapshot(&self, mid: &str) -> Result<FavoriteLibrarySnapshot> {
@@ -1170,19 +1216,38 @@ fn favorite_folder_rename_form(
         ("privacy".to_string(), request.privacy.to_string()),
         ("csrf".to_string(), session.bili_jct.clone()),
     ]);
-    if let Some(cover) = request.cover.as_ref().filter(|value| !value.trim().is_empty()) {
+    if let Some(cover) = request
+        .cover
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         form.insert("cover".to_string(), cover.clone());
     }
     form
 }
 
+fn favorite_folder_delete_form(
+    session: &BiliSession,
+    request: &FavoriteFolderDeleteRequest,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("media_id".to_string(), request.media_id.clone()),
+        ("csrf".to_string(), session.bili_jct.clone()),
+    ])
+}
+
 fn favorite_write_api_error(code: i32, message: &str) -> FavoriteWriteError {
+    let lowercase_message = message.to_ascii_lowercase();
     let blocking = matches!(code, -101 | -111 | -400 | 412)
         || message.contains("csrf")
         || message.contains("CSRF")
         || message.contains("验证码")
         || message.contains("风控")
-        || message.to_ascii_lowercase().contains("captcha")
+        || message.contains("操作频繁")
+        || message.contains("频繁")
+        || lowercase_message.contains("captcha")
+        || lowercase_message.contains("rate limit")
+        || lowercase_message.contains("too many")
         || message.contains("未登录")
         || message.contains("账号");
     let kind = if blocking {
@@ -1619,6 +1684,26 @@ mod tests {
     }
 
     #[test]
+    fn builds_favorite_folder_delete_form() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let request = FavoriteFolderDeleteRequest {
+            media_id: "300".to_string(),
+        };
+
+        let form = favorite_folder_delete_form(&session, &request);
+
+        assert_eq!(form.get("media_id").map(String::as_str), Some("300"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+        assert_eq!(form.get("mid"), None);
+        assert_eq!(form.get("resources"), None);
+    }
+
+    #[test]
     fn classifies_security_favorite_write_errors_as_blocking_and_redacted() {
         let err = favorite_write_api_error(
             -111,
@@ -1630,5 +1715,13 @@ mod tests {
         assert!(!err.message.contains("sess-secret"));
         assert!(!err.message.contains("csrf-secret"));
         assert!(!err.message.contains("233333"));
+    }
+
+    #[test]
+    fn classifies_rate_limit_favorite_write_errors_as_blocking() {
+        let err = favorite_write_api_error(-509, "操作频繁，请稍后再试");
+
+        assert_eq!(err.kind, FavoriteWriteErrorKind::Blocked);
+        assert!(err.message.contains("Bilibili favorite write blocked"));
     }
 }

@@ -12,20 +12,20 @@ Successful deletion should remove the local collection and memberships while pre
 
 ## Acceptance criteria
 
-- [ ] Workstation exposes delete for synced mutable favorite folders.
-- [ ] System, default, non-owned, or otherwise unsupported folders are blocked before execution when detectable from metadata.
-- [ ] Delete preview shows folder title, folder id, known item count, snapshot freshness, and known item titles for non-empty folders.
-- [ ] Non-empty folder deletion is allowed.
-- [ ] Delete requires exact confirmation text `DELETE <folder name>`.
-- [ ] Folder deletion requires a complete Bilibili write session.
-- [ ] The backend sends the Bilibili favorite folder delete request with folder id and CSRF token.
-- [ ] Auth, CSRF, captcha, rate-limit, risk-control, and malformed-plan failures are classified as blocked and do not retry automatically.
-- [ ] Successful deletion removes the local collection and its memberships.
-- [ ] Successful deletion does not unconditionally delete library items that may still be present in another folder or resource context.
-- [ ] Delete appears in operation history with impact summary, status, and sanitized errors.
-- [ ] Failed or blocked deletion leaves local collection and memberships intact.
-- [ ] Rust tests cover delete form construction, typed confirmation, non-empty impact metadata, mutation eligibility, local cleanup semantics, and secret redaction.
-- [ ] TypeScript compilation, Rust tests, and production build pass.
+- [x] Workstation exposes delete for synced mutable favorite folders.
+- [x] System, default, non-owned, or otherwise unsupported folders are blocked before execution when detectable from metadata.
+- [x] Delete preview shows folder title, folder id, known item count, snapshot freshness, and known item titles for non-empty folders.
+- [x] Non-empty folder deletion is allowed.
+- [x] Delete requires exact confirmation text `DELETE <folder name>`.
+- [x] Folder deletion requires a complete Bilibili write session.
+- [x] The backend sends the Bilibili favorite folder delete request with folder id and CSRF token.
+- [x] Auth, CSRF, captcha, rate-limit, risk-control, and malformed-plan failures are classified as blocked and do not retry automatically.
+- [x] Successful deletion removes the local collection and its memberships.
+- [x] Successful deletion does not unconditionally delete library items that may still be present in another folder or resource context.
+- [x] Delete appears in operation history with impact summary, status, and sanitized errors.
+- [x] Failed or blocked deletion leaves local collection and memberships intact.
+- [x] Rust tests cover delete form construction, typed confirmation, non-empty impact metadata, mutation eligibility, local cleanup semantics, and secret redaction.
+- [x] TypeScript compilation, Rust tests, and production build pass.
 - [ ] Manual smoke test deletes an empty disposable folder.
 - [ ] Manual smoke test deletes a non-empty disposable folder with test videos and confirms the remote state on Bilibili Web.
 

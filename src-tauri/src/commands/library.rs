@@ -1,13 +1,14 @@
 use crate::bili::auth::BiliAuth;
 use crate::bili::client::{
-    BiliClient, FavoriteDeleteBatch, FavoriteFolderCreateRequest, FavoriteFolderRenameRequest,
-    FavoriteMoveBatch, FavoriteMoveResource, FavoriteWriteError, FavoriteWriteErrorKind,
+    BiliClient, FavoriteDeleteBatch, FavoriteFolderCreateRequest, FavoriteFolderDeleteRequest,
+    FavoriteFolderRenameRequest, FavoriteMoveBatch, FavoriteMoveResource, FavoriteWriteError,
+    FavoriteWriteErrorKind,
 };
 use crate::error::{Result, YadigError};
 use crate::library::{
     AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteFolderCreatePlanRequest,
-    FavoriteFolderRenamePlanRequest, FavoriteOperationPlanRequest, LibraryCollection,
-    OperationPlan, OperationPlanItem, OperationPlanKind,
+    FavoriteFolderDeletePlanRequest, FavoriteFolderRenamePlanRequest, FavoriteOperationPlanRequest,
+    LibraryCollection, OperationPlan, OperationPlanItem, OperationPlanKind,
 };
 use crate::llm::{
     analyze_items, classify_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
@@ -79,6 +80,13 @@ pub async fn create_bili_favorite_folder_rename_plan(
     request: FavoriteFolderRenamePlanRequest,
 ) -> Result<OperationPlan> {
     Ok(OperationPlan::for_bili_favorite_folder_rename(request))
+}
+
+#[tauri::command]
+pub async fn create_bili_favorite_folder_delete_plan(
+    request: FavoriteFolderDeletePlanRequest,
+) -> Result<OperationPlan> {
+    Ok(OperationPlan::for_bili_favorite_folder_delete(request))
 }
 
 #[tauri::command]
@@ -225,6 +233,20 @@ pub async fn execute_bili_favorite_folder_rename_plan(
     execute_favorite_folder_rename_plan_with_runner(plan, confirmed, move |request| {
         let client = Arc::clone(&client);
         async move { client.rename_favorite_folder(&request).await }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_bili_favorite_folder_delete_plan(
+    auth: State<'_, BiliAuth>,
+    plan: OperationPlan,
+    confirmation_text: String,
+) -> Result<BiliFavoriteFolderDeleteExecutionResult> {
+    let client = Arc::new(BiliClient::new((*auth).clone()));
+    execute_favorite_folder_delete_plan_with_runner(plan, &confirmation_text, move |request| {
+        let client = Arc::clone(&client);
+        async move { client.delete_favorite_folder(&request).await }
     })
     .await
 }
@@ -521,6 +543,61 @@ where
     Ok(BiliFavoriteFolderRenameExecutionResult { plan })
 }
 
+async fn execute_favorite_folder_delete_plan_with_runner<F, Fut>(
+    mut plan: OperationPlan,
+    confirmation_text: &str,
+    mut runner: F,
+) -> Result<BiliFavoriteFolderDeleteExecutionResult>
+where
+    F: FnMut(FavoriteFolderDeleteRequest) -> Fut,
+    Fut: Future<Output = std::result::Result<(), FavoriteWriteError>>,
+{
+    if plan.kind != OperationPlanKind::BiliFavoriteFolderDelete {
+        return Err(YadigError::Network(
+            "Only Bilibili favorite folder delete plans can be executed by this command".into(),
+        ));
+    }
+
+    if let Some(item) = plan.items.iter().find(|item| item.status == "pending") {
+        let required = format!("DELETE {}", item.title);
+        if confirmation_text.trim() != required {
+            return Err(YadigError::Network(format!(
+                "Bilibili favorite folder deletion is destructive; type {required} to confirm"
+            )));
+        }
+    }
+
+    for index in 0..plan.items.len() {
+        if plan.items[index].status != "pending" {
+            continue;
+        }
+
+        let Some(request) = favorite_folder_delete_request_from_item(&plan.items[index]) else {
+            mark_plan_item(
+                &mut plan.items[index],
+                "blocked",
+                Some("Missing favorite folder id".to_string()),
+            );
+            continue;
+        };
+
+        match runner(request).await {
+            Ok(()) => {
+                mark_plan_item(&mut plan.items[index], "success", None);
+            }
+            Err(err) => {
+                let status = match err.kind {
+                    FavoriteWriteErrorKind::Failed => "failed",
+                    FavoriteWriteErrorKind::Blocked => "blocked",
+                };
+                mark_plan_item(&mut plan.items[index], status, Some(err.message));
+            }
+        }
+    }
+
+    Ok(BiliFavoriteFolderDeleteExecutionResult { plan })
+}
+
 async fn flush_favorite_move_batch<F, Fut>(
     plan: &mut OperationPlan,
     pending_batch: &mut PendingFavoriteMoveBatch,
@@ -790,6 +867,15 @@ fn favorite_folder_rename_request_from_item(
     })
 }
 
+fn favorite_folder_delete_request_from_item(
+    item: &OperationPlanItem,
+) -> Option<FavoriteFolderDeleteRequest> {
+    let media_id = non_empty(item.source_collection_external_id.as_deref())
+        .or_else(|| non_empty(Some(&item.external_id)))?;
+
+    Some(FavoriteFolderDeleteRequest { media_id })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiliFavoriteMoveExecutionResult {
@@ -813,6 +899,12 @@ pub struct BiliFavoriteFolderCreateExecutionResult {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiliFavoriteFolderRenameExecutionResult {
+    pub plan: OperationPlan,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiliFavoriteFolderDeleteExecutionResult {
     pub plan: OperationPlan,
 }
 
@@ -1075,7 +1167,9 @@ mod favorite_copy_execution_tests {
 #[cfg(test)]
 mod favorite_folder_create_execution_tests {
     use super::*;
-    use crate::bili::client::{FavoriteFolderCreateRequest, FavoriteWriteError, FavoriteWriteErrorKind};
+    use crate::bili::client::{
+        FavoriteFolderCreateRequest, FavoriteWriteError, FavoriteWriteErrorKind,
+    };
     use crate::library::OperationPlanItem;
     use std::cell::RefCell;
 
@@ -1152,7 +1246,9 @@ mod favorite_folder_create_execution_tests {
         assert_eq!(result.plan.items[0].status, "success");
         assert_eq!(result.plan.items[0].external_id, "300");
         assert_eq!(
-            result.plan.items[0].target_collection_external_id.as_deref(),
+            result.plan.items[0]
+                .target_collection_external_id
+                .as_deref(),
             Some("300")
         );
     }
@@ -1293,6 +1389,102 @@ mod favorite_folder_rename_execution_tests {
             },
         ))
         .expect("blocked item status should be returned");
+
+        assert_eq!(result.plan.items[0].status, "blocked");
+        assert!(result.plan.items[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("csrf failed"));
+    }
+}
+
+#[cfg(test)]
+mod favorite_folder_delete_execution_tests {
+    use super::*;
+    use crate::bili::client::{
+        FavoriteFolderDeleteRequest, FavoriteWriteError, FavoriteWriteErrorKind,
+    };
+    use crate::library::OperationPlanItem;
+    use std::cell::RefCell;
+
+    fn delete_folder_plan() -> OperationPlan {
+        OperationPlan {
+            kind: OperationPlanKind::BiliFavoriteFolderDelete,
+            items: vec![OperationPlanItem {
+                external_id: "300".to_string(),
+                title: "Old folder".to_string(),
+                action: "delete_folder".to_string(),
+                target: None,
+                status: "pending".to_string(),
+                error: None,
+                source_collection_external_id: Some("300".to_string()),
+                source_collection_title: Some("Old folder".to_string()),
+                target_collection_external_id: None,
+                target_collection_title: None,
+                resource_id: None,
+                resource_type: None,
+                metadata: serde_json::json!({
+                    "knownItemCount": 2,
+                    "knownItemTitles": ["Video A", "Video B"],
+                    "snapshotLastSyncedAt": "2026-06-11T10:00:00Z"
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn favorite_folder_delete_execution_requires_exact_folder_confirmation() {
+        let calls = RefCell::new(Vec::<FavoriteFolderDeleteRequest>::new());
+
+        let err = futures::executor::block_on(execute_favorite_folder_delete_plan_with_runner(
+            delete_folder_plan(),
+            "DELETE",
+            |request| {
+                calls.borrow_mut().push(request);
+                async { Ok(()) }
+            },
+        ))
+        .expect_err("folder title must be included in confirmation");
+
+        assert!(err.to_string().contains("DELETE Old folder"));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn favorite_folder_delete_execution_marks_success() {
+        let calls = RefCell::new(Vec::<FavoriteFolderDeleteRequest>::new());
+
+        let result = futures::executor::block_on(execute_favorite_folder_delete_plan_with_runner(
+            delete_folder_plan(),
+            "DELETE Old folder",
+            |request| {
+                calls.borrow_mut().push(request);
+                async { Ok(()) }
+            },
+        ))
+        .expect("folder delete execution should succeed");
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].media_id, "300");
+        assert_eq!(result.plan.items[0].status, "success");
+        assert_eq!(result.plan.items[0].error, None);
+    }
+
+    #[test]
+    fn favorite_folder_delete_execution_marks_blocked_errors() {
+        let result = futures::executor::block_on(execute_favorite_folder_delete_plan_with_runner(
+            delete_folder_plan(),
+            "DELETE Old folder",
+            |_request| async {
+                Err(FavoriteWriteError {
+                    kind: FavoriteWriteErrorKind::Blocked,
+                    message: "Bilibili favorite write blocked (-111): csrf failed".to_string(),
+                })
+            },
+        ))
+        .expect("blocked folder delete item status should be returned");
 
         assert_eq!(result.plan.items[0].status, "blocked");
         assert!(result.plan.items[0]

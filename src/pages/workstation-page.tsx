@@ -27,9 +27,11 @@ import {
   type LlmClassificationItem,
   type LlmClassificationMode,
   type OperationPlan,
+  type OperationPlanItem,
   type OperationPlanItemStatus,
 } from "@/lib/tauri";
 import {
+  deleteBiliFavoriteFolderFromPlan,
   listFavoriteOperationCandidates,
   listBiliFavoriteOperationPlanHistory,
   listLatestLlmClassifications,
@@ -58,6 +60,7 @@ import {
 const DEFAULT_LLM_PROVIDER = "openai-compatible";
 const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
 const DEFAULT_LLM_MODEL = "mimo-v2.5-pro";
+const FOLDER_DELETE_TITLE_PREVIEW_LIMIT = 40;
 
 type ResourceFilter = "all" | LibraryItem["itemType"];
 const OPERATION_ITEM_STATUSES: OperationPlanItemStatus[] = [
@@ -87,8 +90,10 @@ function isMusicSuggestion(analysis?: LlmClassificationItem) {
   );
 }
 
-function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
+function favoritePlanKindLabel(kind: OperationPlan["kind"]) {
   switch (kind) {
+    case "bili_batch_audio_extraction":
+      return "Audio Extraction";
     case "bili_batch_copy":
       return "Copy";
     case "bili_batch_move":
@@ -99,6 +104,8 @@ function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
       return "Create Folder";
     case "bili_favorite_folder_rename":
       return "Rename Folder";
+    case "bili_favorite_folder_delete":
+      return "Delete Folder";
   }
 }
 
@@ -117,6 +124,8 @@ function operationActionLabel(action: string) {
       return "Create Folder";
     case "rename_folder":
       return "Rename Folder";
+    case "delete_folder":
+      return "Delete Folder";
     default:
       return action;
   }
@@ -130,6 +139,71 @@ function formatHistoryTime(value: string) {
   const date = new Date(value.replace(" ", "T"));
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function metadataString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function metadataNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function metadataStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function folderDeleteKnownCount(item: Pick<OperationPlanItem, "metadata">): number {
+  return Math.max(0, Math.trunc(metadataNumber(item.metadata.knownItemCount) ?? 0));
+}
+
+function folderDeleteKnownTitles(item: Pick<OperationPlanItem, "metadata">): string[] {
+  return metadataStringArray(item.metadata.knownItemTitles);
+}
+
+function folderDeleteSnapshotLabel(item: Pick<OperationPlanItem, "metadata">): string {
+  const snapshot = metadataString(item.metadata.snapshotLastSyncedAt);
+  return snapshot ? formatHistoryTime(snapshot) : "missing snapshot freshness";
+}
+
+function operationItemDetail(item: OperationPlanItem): string {
+  if (item.action === "create_folder") {
+    return [
+      folderPrivacyLabel(item.target),
+      item.targetCollectionTitle,
+      operationPlanItemStatusLabel(item.status),
+    ].filter(Boolean).join(" · ");
+  }
+  if (item.action === "rename_folder") {
+    return [
+      `${item.sourceCollectionTitle ?? item.title} -> ${item.targetCollectionTitle ?? item.target ?? "New title"}`,
+      `folder ${item.externalId}`,
+      operationPlanItemStatusLabel(item.status),
+    ].join(" · ");
+  }
+  if (item.action === "delete_folder") {
+    return [
+      `folder ${item.externalId}`,
+      `${folderDeleteKnownCount(item)} known items`,
+      `synced ${folderDeleteSnapshotLabel(item)}`,
+      operationPlanItemStatusLabel(item.status),
+    ].join(" · ");
+  }
+
+  return [
+    item.sourceCollectionTitle ?? "Unknown source",
+    item.targetCollectionTitle ? `-> ${item.targetCollectionTitle}` : null,
+    operationPlanItemStatusLabel(item.status),
+  ].filter(Boolean).join(" · ");
 }
 
 function sanitizeLlmError(error: string | null | undefined): string | null {
@@ -174,6 +248,7 @@ export function WorkstationPage() {
   const [folderCreatePrivacy, setFolderCreatePrivacy] = useState<FavoriteFolderPrivacy>("private");
   const [folderRenameId, setFolderRenameId] = useState("");
   const [folderRenameTitle, setFolderRenameTitle] = useState("");
+  const [folderDeleteId, setFolderDeleteId] = useState("");
   const [classifications, setClassifications] = useState<LlmClassificationItem[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
@@ -243,6 +318,25 @@ export function WorkstationPage() {
     () => favoriteFolders.find((folder) => folder.externalId === folderRenameId) ?? null,
     [favoriteFolders, folderRenameId]
   );
+
+  const deleteFolder = useMemo(
+    () => favoriteFolders.find((folder) => folder.externalId === folderDeleteId) ?? null,
+    [favoriteFolders, folderDeleteId]
+  );
+
+  const deleteFolderItems = useMemo(() => {
+    if (!deleteFolder) return [];
+    return items
+      .filter((item) =>
+        item.itemType === "bili_favorite_video"
+        && item.collections.some((collection) => collection.externalId === deleteFolder.externalId)
+      )
+      .sort((left, right) => left.title.localeCompare(right.title));
+  }, [deleteFolder, items]);
+
+  const deleteFolderSnapshotLastSyncedAt = useMemo(() => {
+    return metadataString(deleteFolder?.rawMetadata.snapshotLastSyncedAt) ?? null;
+  }, [deleteFolder]);
 
   const favoriteVisibleIds = useMemo(() => {
     return new Set(
@@ -688,6 +782,36 @@ export function WorkstationPage() {
     }
   }
 
+  async function createFavoriteFolderDeletePlan() {
+    if (!deleteFolder) {
+      setMessage("Choose a favorite folder before creating a delete draft.");
+      return;
+    }
+
+    setBusy("favorite-folder-delete-plan");
+    setMessage(null);
+    try {
+      const knownItemTitles = deleteFolderItems
+        .slice(0, FOLDER_DELETE_TITLE_PREVIEW_LIMIT)
+        .map((item) => item.title);
+      const nextPlan = await tauri.createBiliFavoriteFolderDeletePlan({
+        folder: deleteFolder,
+        knownItemCount: deleteFolderItems.length,
+        knownItemTitles,
+        snapshotLastSyncedAt: deleteFolderSnapshotLastSyncedAt,
+      });
+      const savedPlanId = await saveOperationPlan(nextPlan);
+      await refreshOperationHistory(savedPlanId);
+      setPlan(nextPlan);
+      const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
+      setMessage(`Created folder delete draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder delete draft creation failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function executeAudioPlan() {
     if (!plan) return;
     const confirmed = window.confirm(
@@ -899,6 +1023,58 @@ export function WorkstationPage() {
       setMessage(`Renamed ${successCount}/${result.plan.items.length} favorite folders.`);
     } catch (err) {
       setMessage(safeErrorMessage("Favorite folder rename failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function executeFavoriteFolderDeletePlan() {
+    if (!plan || plan.kind !== "bili_favorite_folder_delete") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This folder delete plan has no pending items to execute.");
+      return;
+    }
+    const item = plan.items[0];
+    const folderTitle = item.sourceCollectionTitle ?? item.title;
+    const requiredText = `DELETE ${folderTitle}`;
+    const knownItemCount = folderDeleteKnownCount(item);
+    const confirmationText = window.prompt(
+      `Delete Bilibili favorite folder "${folderTitle}" with ${knownItemCount} known item${knownItemCount === 1 ? "" : "s"}? Type ${requiredText} to confirm.`
+    );
+    if (confirmationText !== requiredText) {
+      setMessage("Folder delete execution cancelled.");
+      return;
+    }
+
+    setBusy("favorite-folder-delete-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteFolderDeletePlan({ plan, confirmationText });
+      await deleteBiliFavoriteFolderFromPlan(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
+      const [storedItems, storedFolders] = await Promise.all([
+        listLibraryItemsWithCollections(),
+        listLibraryCollections("bili_favorite_folder"),
+      ]);
+      setItems(storedItems);
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      if (folderDeleteId === item.externalId) {
+        setFolderDeleteId("");
+      }
+      if (selectedFolderId === item.externalId) {
+        setSelectedFolderId("all");
+      }
+      if (targetFolderId === item.externalId) {
+        setTargetFolderId("");
+      }
+      setSelectedFavoriteIds(new Set());
+      const successCount = result.plan.items.filter((planItem) => planItem.status === "success").length;
+      setMessage(`Deleted ${successCount}/${result.plan.items.length} favorite folders.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder delete failed", err));
     } finally {
       setBusy(null);
     }
@@ -1119,6 +1295,46 @@ export function WorkstationPage() {
                     Rename Folder Draft
                   </button>
                 </div>
+                <div className="grid gap-2 border-t border-border pt-3">
+                  <label className="block text-sm text-muted-foreground">
+                    Delete folder
+                    <select
+                      value={folderDeleteId}
+                      onChange={(event) => setFolderDeleteId(event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="">Select folder</option>
+                      {favoriteFolders.map((folder) => (
+                        <option key={folder.externalId} value={folder.externalId}>
+                          {folder.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {deleteFolder && (
+                    <div className="space-y-1 rounded border border-border p-2 text-xs text-muted-foreground">
+                      <div>Folder id {deleteFolder.externalId}</div>
+                      <div>
+                        {deleteFolderItems.length} known item{deleteFolderItems.length === 1 ? "" : "s"} · synced{" "}
+                        {deleteFolderSnapshotLastSyncedAt ? formatHistoryTime(deleteFolderSnapshotLastSyncedAt) : "missing snapshot freshness"}
+                      </div>
+                      {deleteFolderItems.length > 0 && (
+                        <div className="max-h-24 overflow-y-auto break-words">
+                          {deleteFolderItems.slice(0, 12).map((item) => item.title).join(" / ")}
+                          {deleteFolderItems.length > 12 ? ` / +${deleteFolderItems.length - 12} more` : ""}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => void createFavoriteFolderDeletePlan()}
+                    disabled={busy !== null || !deleteFolder}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-destructive px-3 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete Folder Draft
+                  </button>
+                </div>
                 <label className="block text-sm text-muted-foreground">
                   Copy or move target
                   <select
@@ -1235,13 +1451,13 @@ export function WorkstationPage() {
                             <div className="mt-1 text-xs text-muted-foreground">
                               {operationActionLabel(item.action)}
                               {" · "}
-                              {item.action === "rename_folder"
-                                ? `${item.sourceCollectionTitle ?? item.title} -> ${item.targetCollectionTitle ?? item.target ?? "New title"}`
-                                : item.sourceCollectionTitle ?? "Unknown source"}
-                              {item.action !== "rename_folder" && item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
-                              {" · "}
-                              {operationPlanItemStatusLabel(item.status)}
+                              {operationItemDetail(item)}
                             </div>
+                            {item.action === "delete_folder" && folderDeleteKnownTitles(item).length > 0 && (
+                              <div className="mt-1 max-h-20 overflow-y-auto break-words text-xs text-muted-foreground">
+                                {folderDeleteKnownTitles(item).join(" / ")}
+                              </div>
+                            )}
                             {issueKind !== "none" && (
                               <div className="mt-1 text-xs text-muted-foreground">
                                 {operationIssueLabel(issueKind)}
@@ -1279,19 +1495,13 @@ export function WorkstationPage() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         {operationActionLabel(item.action)}
                         {" · "}
-                        {item.action === "create_folder"
-                          ? folderPrivacyLabel(item.target)
-                          : item.action === "rename_folder"
-                            ? `${item.sourceCollectionTitle ?? item.title} -> ${item.targetCollectionTitle ?? item.target ?? "New title"}`
-                            : item.sourceCollectionTitle ?? "Unknown source"}
-                        {item.action === "create_folder"
-                          ? item.targetCollectionTitle ? ` · ${item.targetCollectionTitle}` : ""
-                          : item.action === "rename_folder"
-                            ? ` · folder ${item.externalId}`
-                            : item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
-                        {" · "}
-                        {operationPlanItemStatusLabel(item.status)}
+                        {operationItemDetail(item)}
                       </div>
+                      {item.action === "delete_folder" && folderDeleteKnownTitles(item).length > 0 && (
+                        <div className="mt-1 max-h-24 overflow-y-auto break-words text-xs text-muted-foreground">
+                          {folderDeleteKnownTitles(item).join(" / ")}
+                        </div>
+                      )}
                       {item.error && (
                         <div className="mt-1 text-xs text-destructive">{sanitizeOperationError(item.error)}</div>
                       )}
@@ -1346,6 +1556,16 @@ export function WorkstationPage() {
                   >
                     <FolderPen className="h-4 w-4" />
                     Execute Rename Folder
+                  </button>
+                )}
+                {plan.kind === "bili_favorite_folder_delete" && (
+                  <button
+                    onClick={() => void executeFavoriteFolderDeletePlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-destructive px-3 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Execute Delete Folder
                   </button>
                 )}
               </div>

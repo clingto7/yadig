@@ -205,13 +205,21 @@ export interface FavoriteFolderRenamePlanRequest {
   newTitle: string;
 }
 
+export interface FavoriteFolderDeletePlanRequest {
+  folder: LibraryCollection;
+  knownItemCount: number;
+  knownItemTitles: string[];
+  snapshotLastSyncedAt: string | null;
+}
+
 export type OperationPlanKind =
   | "bili_batch_audio_extraction"
   | "bili_batch_copy"
   | "bili_batch_move"
   | "bili_batch_delete"
   | "bili_favorite_folder_create"
-  | "bili_favorite_folder_rename";
+  | "bili_favorite_folder_rename"
+  | "bili_favorite_folder_delete";
 
 export interface OperationPlanItem {
   externalId: string;
@@ -264,6 +272,10 @@ export interface BiliFavoriteFolderCreateExecutionResult {
 }
 
 export interface BiliFavoriteFolderRenameExecutionResult {
+  plan: OperationPlan;
+}
+
+export interface BiliFavoriteFolderDeleteExecutionResult {
   plan: OperationPlan;
 }
 
@@ -354,6 +366,9 @@ export const tauri = {
   createBiliFavoriteFolderRenamePlan: (request: FavoriteFolderRenamePlanRequest): Promise<OperationPlan> =>
     invoke("create_bili_favorite_folder_rename_plan", { request }),
 
+  createBiliFavoriteFolderDeletePlan: (request: FavoriteFolderDeletePlanRequest): Promise<OperationPlan> =>
+    invoke("create_bili_favorite_folder_delete_plan", { request }),
+
   executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
     invoke("execute_bili_audio_extraction_plan", params),
 
@@ -371,6 +386,9 @@ export const tauri = {
 
   executeBiliFavoriteFolderRenamePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteFolderRenameExecutionResult> =>
     invoke("execute_bili_favorite_folder_rename_plan", params),
+
+  executeBiliFavoriteFolderDeletePlan: (params: { plan: OperationPlan; confirmationText: string }): Promise<BiliFavoriteFolderDeleteExecutionResult> =>
+    invoke("execute_bili_favorite_folder_delete_plan", params),
 
   // YouTube
   youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>
