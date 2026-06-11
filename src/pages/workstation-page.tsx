@@ -8,6 +8,16 @@ import {
   type ClassificationProgress,
 } from "@/lib/llm-classification-progress";
 import {
+  DEFAULT_CLASSIFICATION_REVIEW_FILTERS,
+  filterClassificationReviewItems,
+  selectFilteredFavoriteIds,
+  uniqueBiliCategories,
+  uniqueClassificationCategories,
+  uniqueClassificationTags,
+  uniqueSuggestedTargets,
+  type ClassificationReviewFilters,
+} from "@/lib/classification-review";
+import {
   tauri,
   type FavoriteOperationAction,
   type LibraryCollection,
@@ -116,6 +126,12 @@ function safeErrorMessage(prefix: string, err: unknown) {
   return `${prefix}: ${sanitizeLlmError(String(err)) ?? "Unknown error"}`;
 }
 
+function confidencePercentToRatio(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed)) / 100;
+}
+
 export function WorkstationPage() {
   const [items, setItems] = useState<LibraryItemWithCollections[]>([]);
   const [favoriteFolders, setFavoriteFolders] = useState<LibraryCollection[]>([]);
@@ -128,6 +144,9 @@ export function WorkstationPage() {
   const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
   const [selectedHistoryPlanId, setSelectedHistoryPlanId] = useState<number | null>(null);
   const [instruction, setInstruction] = useState("请按领域给这些 B 站资源分类，并标出适合批量提取音频的音乐类视频。");
+  const [reviewFilters, setReviewFilters] = useState<ClassificationReviewFilters>(
+    DEFAULT_CLASSIFICATION_REVIEW_FILTERS
+  );
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [classificationProgress, setClassificationProgress] = useState<ClassificationProgress | null>(null);
@@ -142,14 +161,15 @@ export function WorkstationPage() {
         ? items
         : items.filter((item) => item.itemType === resourceFilter);
 
-    if (resourceFilter !== "bili_favorite_video" || selectedFolderId === "all") {
+    if (resourceFilter !== "bili_favorite_video") {
       return typeFilteredItems;
     }
 
-    return typeFilteredItems.filter((item) =>
-      item.collections.some((collection) => collection.externalId === selectedFolderId)
-    );
-  }, [items, resourceFilter, selectedFolderId]);
+    return filterClassificationReviewItems(typeFilteredItems, classifications, {
+      ...reviewFilters,
+      sourceFolderId: selectedFolderId,
+    });
+  }, [classifications, items, resourceFilter, reviewFilters, selectedFolderId]);
 
   const favoritePlanContextReady =
     resourceFilter === "bili_favorite_video" && selectedFolderId !== "all";
@@ -173,6 +193,26 @@ export function WorkstationPage() {
   }, [visibleItems]);
 
   const visibleFavoriteCount = favoriteVisibleIds.size;
+
+  const classificationCategories = useMemo(
+    () => uniqueClassificationCategories(classifications),
+    [classifications]
+  );
+
+  const classificationTags = useMemo(
+    () => uniqueClassificationTags(classifications),
+    [classifications]
+  );
+
+  const suggestedTargets = useMemo(
+    () => uniqueSuggestedTargets(classifications),
+    [classifications]
+  );
+
+  const biliCategories = useMemo(
+    () => uniqueBiliCategories(items.filter((item) => item.itemType === "bili_favorite_video")),
+    [items]
+  );
 
   const planStatusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -441,11 +481,29 @@ export function WorkstationPage() {
   }
 
   function selectVisibleFavorites() {
-    setSelectedFavoriteIds(new Set(favoriteVisibleIds));
+    const reviewItems = filterClassificationReviewItems(items, classifications, {
+      ...reviewFilters,
+      sourceFolderId: selectedFolderId,
+    });
+    setSelectedFavoriteIds(selectFilteredFavoriteIds(reviewItems));
   }
 
   function clearFavoriteSelection() {
     setSelectedFavoriteIds(new Set());
+  }
+
+  function updateReviewFilter<K extends keyof ClassificationReviewFilters>(
+    key: K,
+    value: ClassificationReviewFilters[K]
+  ) {
+    setReviewFilters((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function clearReviewFilters() {
+    setReviewFilters(DEFAULT_CLASSIFICATION_REVIEW_FILTERS);
   }
 
   async function createFavoritePlan(action: FavoriteOperationAction) {
@@ -921,13 +979,125 @@ export function WorkstationPage() {
                   </select>
                 </label>
               )}
-              {favoritePlanContextReady && (
+              {resourceFilter === "bili_favorite_video" && (
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="block text-sm text-muted-foreground">
+                    Category
+                    <select
+                      value={reviewFilters.category}
+                      onChange={(event) => updateReviewFilter("category", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All categories</option>
+                      {classificationCategories.map((category) => (
+                        <option key={category} value={category}>
+                          {category}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Tag
+                    <select
+                      value={reviewFilters.tag}
+                      onChange={(event) => updateReviewFilter("tag", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All tags</option>
+                      {classificationTags.map((tag) => (
+                        <option key={tag} value={tag}>
+                          {tag}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Suggested action
+                    <select
+                      value={reviewFilters.suggestedAction}
+                      onChange={(event) => updateReviewFilter("suggestedAction", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All actions</option>
+                      <option value="copy">Copy</option>
+                      <option value="move">Move</option>
+                      <option value="delete">Delete</option>
+                      <option value="none">None</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Suggested target
+                    <select
+                      value={reviewFilters.suggestedTarget}
+                      onChange={(event) => updateReviewFilter("suggestedTarget", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All targets</option>
+                      {suggestedTargets.map((target) => (
+                        <option key={target} value={target}>
+                          {target}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Min confidence
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={Math.round(reviewFilters.minConfidence * 100)}
+                      onChange={(event) =>
+                        updateReviewFilter("minConfidence", confidencePercentToRatio(event.target.value))
+                      }
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Bilibili category
+                    <select
+                      value={reviewFilters.biliCategory}
+                      onChange={(event) => updateReviewFilter("biliCategory", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All Bilibili categories</option>
+                      {biliCategories.map((category) => (
+                        <option key={category} value={category}>
+                          {category}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Provenance
+                    <select
+                      value={reviewFilters.provenance}
+                      onChange={(event) => updateReviewFilter("provenance", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="all">All sources</option>
+                      <option value="llm">LLM</option>
+                      <option value="local_metadata">Local metadata</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    Title or author
+                    <input
+                      value={reviewFilters.textQuery}
+                      onChange={(event) => updateReviewFilter("textQuery", event.target.value)}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </label>
+                </div>
+              )}
+              {resourceFilter === "bili_favorite_video" && (
                 <div className="mt-3 flex flex-wrap gap-2 text-sm">
                   <button
                     onClick={selectVisibleFavorites}
                     className="inline-flex h-8 items-center rounded-md border border-border px-3 hover:bg-secondary"
                   >
-                    Select Visible
+                    Select Filtered
                   </button>
                   <button
                     onClick={clearFavoriteSelection}
@@ -935,6 +1105,15 @@ export function WorkstationPage() {
                   >
                     Clear
                   </button>
+                  <button
+                    onClick={clearReviewFilters}
+                    className="inline-flex h-8 items-center rounded-md border border-border px-3 hover:bg-secondary"
+                  >
+                    Reset Filters
+                  </button>
+                  <span className="inline-flex h-8 items-center text-muted-foreground">
+                    {selectedFavoriteIds.size} selected · {visibleFavoriteCount} filtered favorites
+                  </span>
                 </div>
               )}
             </div>
@@ -953,7 +1132,7 @@ export function WorkstationPage() {
                   >
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        {favoritePlanContextReady && item.itemType === "bili_favorite_video" && (
+                        {resourceFilter === "bili_favorite_video" && item.itemType === "bili_favorite_video" && (
                           <input
                             type="checkbox"
                             checked={selectedFavoriteIds.has(item.externalId)}

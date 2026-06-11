@@ -12,15 +12,15 @@ This slice does not execute remote operations. It creates a reliable human revie
 
 ## Acceptance criteria
 
-- [ ] Workstation shows category, tags, confidence, suggested action, suggested target folder, reason, and provenance for favorite items with classifications.
-- [ ] Users can filter by source favorite folder, category, tag, confidence threshold, suggested action, suggested target folder, title, author, and Bilibili category.
-- [ ] Users can select all currently filtered favorite items.
-- [ ] Users can deselect individual items after bulk selection.
-- [ ] Selection remains scoped to Bilibili favorite items and does not accidentally include follows or watch-later items.
-- [ ] The UI distinguishes suggestions from draft plans and executed operations.
-- [ ] Filter state changes do not modify remote Bilibili state.
-- [ ] Pure filtering/selection behavior is covered by targeted frontend helper tests or contract checks.
-- [ ] TypeScript compilation passes.
+- [x] Workstation shows category, tags, confidence, suggested action, suggested target folder, reason, and provenance for favorite items with classifications.
+- [x] Users can filter by source favorite folder, category, tag, confidence threshold, suggested action, suggested target folder, title, author, and Bilibili category.
+- [x] Users can select all currently filtered favorite items.
+- [x] Users can deselect individual items after bulk selection.
+- [x] Selection remains scoped to Bilibili favorite items and does not accidentally include follows or watch-later items.
+- [x] The UI distinguishes suggestions from draft plans and executed operations.
+- [x] Filter state changes do not modify remote Bilibili state.
+- [x] Pure filtering/selection behavior is covered by targeted frontend helper tests or contract checks.
+- [x] TypeScript compilation passes.
 
 ## Blocked by
 
