@@ -53,6 +53,15 @@ pub struct FavoriteFolderCreateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FavoriteFolderRenameRequest {
+    pub media_id: String,
+    pub title: String,
+    pub intro: String,
+    pub privacy: i32,
+    pub cover: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FavoriteWriteErrorKind {
     Failed,
     Blocked,
@@ -383,6 +392,61 @@ impl BiliClient {
         normalize_bili_favorite_folder(raw_metadata).ok_or_else(|| FavoriteWriteError {
             kind: FavoriteWriteErrorKind::Failed,
             message: "Bilibili favorite folder create response could not be normalized".to_string(),
+        })
+    }
+
+    pub async fn rename_favorite_folder(
+        &self,
+        request: &FavoriteFolderRenameRequest,
+    ) -> std::result::Result<LibraryCollection, FavoriteWriteError> {
+        let session = favorite_write_session(self.auth.session())?;
+        let resp = self
+            .http
+            .post("https://api.bilibili.com/x/v3/fav/folder/edit")
+            .header("Referer", "https://www.bilibili.com")
+            .header("Origin", "https://www.bilibili.com")
+            .header("Cookie", session_cookie(&session))
+            .form(&favorite_folder_rename_form(&session, request))
+            .send()
+            .await
+            .map_err(|err| FavoriteWriteError {
+                kind: FavoriteWriteErrorKind::Failed,
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder rename request failed: {err}"
+                )),
+            })?;
+
+        let status = resp.status();
+        let body: BiliResponse<serde_json::Value> =
+            resp.json().await.map_err(|err| FavoriteWriteError {
+                kind: if status.as_u16() == 412 {
+                    FavoriteWriteErrorKind::Blocked
+                } else {
+                    FavoriteWriteErrorKind::Failed
+                },
+                message: redact_bili_error(&format!(
+                    "Bilibili favorite folder rename response parse error: {err}"
+                )),
+            })?;
+
+        if body.code != 0 {
+            return Err(favorite_write_api_error(body.code, &body.message));
+        }
+
+        let mut raw_metadata = body.data.unwrap_or_else(|| serde_json::json!({}));
+        if raw_metadata.get("id").is_none() && raw_metadata.get("media_id").is_none() {
+            raw_metadata["id"] = serde_json::Value::String(request.media_id.clone());
+        }
+        raw_metadata["title"] = serde_json::Value::String(request.title.clone());
+        raw_metadata["intro"] = serde_json::Value::String(request.intro.clone());
+        raw_metadata["privacy"] = serde_json::Value::Number(request.privacy.into());
+        if let Some(cover) = request.cover.as_ref() {
+            raw_metadata["cover"] = serde_json::Value::String(cover.clone());
+        }
+
+        normalize_bili_favorite_folder(raw_metadata).ok_or_else(|| FavoriteWriteError {
+            kind: FavoriteWriteErrorKind::Failed,
+            message: "Bilibili favorite folder rename response could not be normalized".to_string(),
         })
     }
 
@@ -1095,6 +1159,23 @@ fn favorite_folder_create_form(
     ])
 }
 
+fn favorite_folder_rename_form(
+    session: &BiliSession,
+    request: &FavoriteFolderRenameRequest,
+) -> BTreeMap<String, String> {
+    let mut form = BTreeMap::from([
+        ("media_id".to_string(), request.media_id.clone()),
+        ("title".to_string(), request.title.clone()),
+        ("intro".to_string(), request.intro.clone()),
+        ("privacy".to_string(), request.privacy.to_string()),
+        ("csrf".to_string(), session.bili_jct.clone()),
+    ]);
+    if let Some(cover) = request.cover.as_ref().filter(|value| !value.trim().is_empty()) {
+        form.insert("cover".to_string(), cover.clone());
+    }
+    form
+}
+
 fn favorite_write_api_error(code: i32, message: &str) -> FavoriteWriteError {
     let blocking = matches!(code, -101 | -111 | -400 | 412)
         || message.contains("csrf")
@@ -1500,6 +1581,39 @@ mod tests {
             Some("Temporary test folder")
         );
         assert_eq!(form.get("privacy").map(String::as_str), Some("1"));
+        assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
+        assert_eq!(form.get("mid"), None);
+    }
+
+    #[test]
+    fn builds_favorite_folder_rename_form_preserving_metadata() {
+        let session = crate::bili::auth::BiliSession {
+            sessdata: "sess-secret".to_string(),
+            bili_jct: "csrf-secret".to_string(),
+            dede_user_id: "233333".to_string(),
+            vip_status: 0,
+        };
+        let request = FavoriteFolderRenameRequest {
+            media_id: "300".to_string(),
+            title: "New folder".to_string(),
+            intro: "Keep this intro".to_string(),
+            privacy: 1,
+            cover: Some("https://i0.hdslb.com/cover.jpg".to_string()),
+        };
+
+        let form = favorite_folder_rename_form(&session, &request);
+
+        assert_eq!(form.get("media_id").map(String::as_str), Some("300"));
+        assert_eq!(form.get("title").map(String::as_str), Some("New folder"));
+        assert_eq!(
+            form.get("intro").map(String::as_str),
+            Some("Keep this intro")
+        );
+        assert_eq!(form.get("privacy").map(String::as_str), Some("1"));
+        assert_eq!(
+            form.get("cover").map(String::as_str),
+            Some("https://i0.hdslb.com/cover.jpg")
+        );
         assert_eq!(form.get("csrf").map(String::as_str), Some("csrf-secret"));
         assert_eq!(form.get("mid"), None);
     }

@@ -1,13 +1,13 @@
 use crate::bili::auth::BiliAuth;
 use crate::bili::client::{
-    BiliClient, FavoriteDeleteBatch, FavoriteFolderCreateRequest, FavoriteMoveBatch,
-    FavoriteMoveResource, FavoriteWriteError, FavoriteWriteErrorKind,
+    BiliClient, FavoriteDeleteBatch, FavoriteFolderCreateRequest, FavoriteFolderRenameRequest,
+    FavoriteMoveBatch, FavoriteMoveResource, FavoriteWriteError, FavoriteWriteErrorKind,
 };
 use crate::error::{Result, YadigError};
 use crate::library::{
     AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteFolderCreatePlanRequest,
-    FavoriteOperationPlanRequest, LibraryCollection, OperationPlan, OperationPlanItem,
-    OperationPlanKind,
+    FavoriteFolderRenamePlanRequest, FavoriteOperationPlanRequest, LibraryCollection,
+    OperationPlan, OperationPlanItem, OperationPlanKind,
 };
 use crate::llm::{
     analyze_items, classify_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
@@ -72,6 +72,13 @@ pub async fn create_bili_favorite_folder_create_plan(
     request: FavoriteFolderCreatePlanRequest,
 ) -> Result<OperationPlan> {
     Ok(OperationPlan::for_bili_favorite_folder_create(request))
+}
+
+#[tauri::command]
+pub async fn create_bili_favorite_folder_rename_plan(
+    request: FavoriteFolderRenamePlanRequest,
+) -> Result<OperationPlan> {
+    Ok(OperationPlan::for_bili_favorite_folder_rename(request))
 }
 
 #[tauri::command]
@@ -204,6 +211,20 @@ pub async fn execute_bili_favorite_folder_create_plan(
     execute_favorite_folder_create_plan_with_runner(plan, confirmed, move |request| {
         let client = Arc::clone(&client);
         async move { client.create_favorite_folder(&request).await }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_bili_favorite_folder_rename_plan(
+    auth: State<'_, BiliAuth>,
+    plan: OperationPlan,
+    confirmed: bool,
+) -> Result<BiliFavoriteFolderRenameExecutionResult> {
+    let client = Arc::new(BiliClient::new((*auth).clone()));
+    execute_favorite_folder_rename_plan_with_runner(plan, confirmed, move |request| {
+        let client = Arc::clone(&client);
+        async move { client.rename_favorite_folder(&request).await }
     })
     .await
 }
@@ -445,6 +466,61 @@ where
     Ok(BiliFavoriteFolderCreateExecutionResult { plan })
 }
 
+async fn execute_favorite_folder_rename_plan_with_runner<F, Fut>(
+    mut plan: OperationPlan,
+    confirmed: bool,
+    mut runner: F,
+) -> Result<BiliFavoriteFolderRenameExecutionResult>
+where
+    F: FnMut(FavoriteFolderRenameRequest) -> Fut,
+    Fut: Future<Output = std::result::Result<LibraryCollection, FavoriteWriteError>>,
+{
+    if plan.kind != OperationPlanKind::BiliFavoriteFolderRename {
+        return Err(YadigError::Network(
+            "Only Bilibili favorite folder rename plans can be executed by this command".into(),
+        ));
+    }
+    if !confirmed {
+        return Err(YadigError::Network(
+            "Bilibili favorite folder rename requires explicit confirmation".into(),
+        ));
+    }
+
+    for index in 0..plan.items.len() {
+        if plan.items[index].status != "pending" {
+            continue;
+        }
+
+        let Some(request) = favorite_folder_rename_request_from_item(&plan.items[index]) else {
+            mark_plan_item(
+                &mut plan.items[index],
+                "blocked",
+                Some("Missing favorite folder id, new title, or preserved metadata".to_string()),
+            );
+            continue;
+        };
+
+        match runner(request).await {
+            Ok(collection) => {
+                plan.items[index].external_id = collection.external_id.clone();
+                plan.items[index].title = collection.title;
+                plan.items[index].target_collection_external_id = Some(collection.external_id);
+                plan.items[index].metadata = collection.raw_metadata;
+                mark_plan_item(&mut plan.items[index], "success", None);
+            }
+            Err(err) => {
+                let status = match err.kind {
+                    FavoriteWriteErrorKind::Failed => "failed",
+                    FavoriteWriteErrorKind::Blocked => "blocked",
+                };
+                mark_plan_item(&mut plan.items[index], status, Some(err.message));
+            }
+        }
+    }
+
+    Ok(BiliFavoriteFolderRenameExecutionResult { plan })
+}
+
 async fn flush_favorite_move_batch<F, Fut>(
     plan: &mut OperationPlan,
     pending_batch: &mut PendingFavoriteMoveBatch,
@@ -675,6 +751,45 @@ fn favorite_folder_create_request_from_item(
     })
 }
 
+fn favorite_folder_rename_request_from_item(
+    item: &OperationPlanItem,
+) -> Option<FavoriteFolderRenameRequest> {
+    let media_id = non_empty(item.source_collection_external_id.as_deref())
+        .or_else(|| non_empty(Some(&item.external_id)))?;
+    let title = non_empty(item.target.as_deref())
+        .or_else(|| non_empty(item.target_collection_title.as_deref()))?;
+    let intro = item
+        .metadata
+        .get("intro")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let privacy = item
+        .metadata
+        .get("privacy")
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+        })
+        .and_then(|value| i32::try_from(value).ok())?;
+    let cover = item
+        .metadata
+        .get("cover")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    Some(FavoriteFolderRenameRequest {
+        media_id,
+        title,
+        intro,
+        privacy,
+        cover,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiliFavoriteMoveExecutionResult {
@@ -692,6 +807,12 @@ pub struct BiliFavoriteDeleteExecutionResult {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiliFavoriteFolderCreateExecutionResult {
+    pub plan: OperationPlan,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiliFavoriteFolderRenameExecutionResult {
     pub plan: OperationPlan,
 }
 
@@ -732,6 +853,7 @@ mod favorite_move_execution_tests {
             target_collection_title: Some("Samples".to_string()),
             resource_id: Some(format!("987654{index}")),
             resource_type: Some("2".to_string()),
+            metadata: serde_json::json!({}),
         }
     }
 
@@ -852,6 +974,7 @@ mod favorite_copy_execution_tests {
             target_collection_title: Some("Samples".to_string()),
             resource_id: Some(format!("987654{index}")),
             resource_type: Some("2".to_string()),
+            metadata: serde_json::json!({}),
         }
     }
 
@@ -972,6 +1095,7 @@ mod favorite_folder_create_execution_tests {
                 target_collection_title: Some("Temporary test folder".to_string()),
                 resource_id: None,
                 resource_type: None,
+                metadata: serde_json::json!({}),
             }],
         }
     }
@@ -1057,6 +1181,129 @@ mod favorite_folder_create_execution_tests {
 }
 
 #[cfg(test)]
+mod favorite_folder_rename_execution_tests {
+    use super::*;
+    use crate::bili::client::{
+        FavoriteFolderRenameRequest, FavoriteWriteError, FavoriteWriteErrorKind,
+    };
+    use crate::library::OperationPlanItem;
+    use std::cell::RefCell;
+
+    fn rename_plan() -> OperationPlan {
+        OperationPlan {
+            kind: OperationPlanKind::BiliFavoriteFolderRename,
+            items: vec![OperationPlanItem {
+                external_id: "300".to_string(),
+                title: "Old folder".to_string(),
+                action: "rename_folder".to_string(),
+                target: Some("New folder".to_string()),
+                status: "pending".to_string(),
+                error: None,
+                source_collection_external_id: Some("300".to_string()),
+                source_collection_title: Some("Old folder".to_string()),
+                target_collection_external_id: Some("300".to_string()),
+                target_collection_title: Some("New folder".to_string()),
+                resource_id: None,
+                resource_type: None,
+                metadata: serde_json::json!({
+                    "intro": "Keep this intro",
+                    "privacy": 1,
+                    "cover": "https://i0.hdslb.com/cover.jpg"
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn favorite_folder_rename_execution_requires_explicit_confirmation() {
+        let calls = RefCell::new(Vec::<FavoriteFolderRenameRequest>::new());
+
+        let err = futures::executor::block_on(execute_favorite_folder_rename_plan_with_runner(
+            rename_plan(),
+            false,
+            |request| {
+                calls.borrow_mut().push(request);
+                async {
+                    Ok(LibraryCollection::from_bili_favorite_folder(
+                        "300".to_string(),
+                        "New folder".to_string(),
+                        serde_json::json!({"id": 300, "title": "New folder"}),
+                    ))
+                }
+            },
+        ))
+        .expect_err("confirmation is required");
+
+        assert!(err.to_string().contains("explicit confirmation"));
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn favorite_folder_rename_execution_marks_success_and_updates_title() {
+        let calls = RefCell::new(Vec::<FavoriteFolderRenameRequest>::new());
+
+        let result = futures::executor::block_on(execute_favorite_folder_rename_plan_with_runner(
+            rename_plan(),
+            true,
+            |request| {
+                calls.borrow_mut().push(request);
+                async {
+                    Ok(LibraryCollection::from_bili_favorite_folder(
+                        "300".to_string(),
+                        "New folder".to_string(),
+                        serde_json::json!({"id": 300, "title": "New folder"}),
+                    ))
+                }
+            },
+        ))
+        .expect("folder rename execution should succeed");
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].media_id, "300");
+        assert_eq!(calls[0].title, "New folder");
+        assert_eq!(calls[0].intro, "Keep this intro");
+        assert_eq!(calls[0].privacy, 1);
+        assert_eq!(
+            calls[0].cover.as_deref(),
+            Some("https://i0.hdslb.com/cover.jpg")
+        );
+        assert_eq!(result.plan.items[0].status, "success");
+        assert_eq!(result.plan.items[0].title, "New folder");
+        assert_eq!(
+            result.plan.items[0].source_collection_title.as_deref(),
+            Some("Old folder")
+        );
+        assert_eq!(
+            result.plan.items[0].target_collection_title.as_deref(),
+            Some("New folder")
+        );
+    }
+
+    #[test]
+    fn favorite_folder_rename_execution_marks_blocked_errors() {
+        let result = futures::executor::block_on(execute_favorite_folder_rename_plan_with_runner(
+            rename_plan(),
+            true,
+            |_request| async {
+                Err(FavoriteWriteError {
+                    kind: FavoriteWriteErrorKind::Blocked,
+                    message: "Bilibili favorite write blocked (-111): csrf failed".to_string(),
+                })
+            },
+        ))
+        .expect("blocked item status should be returned");
+
+        assert_eq!(result.plan.items[0].status, "blocked");
+        assert!(result.plan.items[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("csrf failed"));
+    }
+}
+
+#[cfg(test)]
 mod favorite_delete_execution_tests {
     use super::*;
     use crate::bili::client::{FavoriteDeleteBatch, FavoriteWriteError, FavoriteWriteErrorKind};
@@ -1077,6 +1324,7 @@ mod favorite_delete_execution_tests {
             target_collection_title: None,
             resource_id: Some(format!("987654{index}")),
             resource_type: Some("2".to_string()),
+            metadata: serde_json::json!({}),
         }
     }
 

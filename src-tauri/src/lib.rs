@@ -69,6 +69,12 @@ pub fn run() {
             sql: include_str!("../migrations/007_llm_classifications.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "add_operation_plan_item_metadata",
+            sql: include_str!("../migrations/008_operation_plan_item_metadata.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let mut registry = SourceRegistry::new();
@@ -133,11 +139,13 @@ pub fn run() {
             commands::library::create_bili_audio_extraction_plan,
             commands::library::create_bili_favorite_operation_plan,
             commands::library::create_bili_favorite_folder_create_plan,
+            commands::library::create_bili_favorite_folder_rename_plan,
             commands::library::execute_bili_audio_extraction_plan,
             commands::library::execute_bili_favorite_copy_plan,
             commands::library::execute_bili_favorite_move_plan,
             commands::library::execute_bili_favorite_delete_plan,
             commands::library::execute_bili_favorite_folder_create_plan,
+            commands::library::execute_bili_favorite_folder_rename_plan,
             commands::youtube::youtube_extract_audio,
             commands::youtube::youtube_search,
             commands::youtube::youtube_check_ready,

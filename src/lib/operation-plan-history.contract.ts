@@ -21,6 +21,7 @@ const blockedItem: OperationPlanItem = {
   targetCollectionTitle: "Target",
   resourceId: "resource-id",
   resourceType: "2",
+  metadata: {},
 };
 
 export const operationPlanHistoryContract = {

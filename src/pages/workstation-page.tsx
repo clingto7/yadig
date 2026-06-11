@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Store } from "@tauri-apps/plugin-store";
-import { Brain, Clock3, Copy as CopyIcon, Download, FolderInput, FolderPlus, RefreshCw, Tags, Trash2 } from "lucide-react";
+import { Brain, Clock3, Copy as CopyIcon, Download, FolderInput, FolderPen, FolderPlus, RefreshCw, Tags, Trash2 } from "lucide-react";
 import {
   buildClassificationProgress,
   chunkClassificationItems,
@@ -39,6 +39,7 @@ import {
   saveOperationPlan,
   updateBiliFavoriteCopyMemberships,
   updateBiliFavoriteDeleteMemberships,
+  updateBiliFavoriteFolderFromRenamePlan,
   updateBiliFavoriteMoveMemberships,
   upsertBiliFavoriteFolderFromCreatePlan,
   upsertBiliSyncResult,
@@ -96,6 +97,8 @@ function favoritePlanKindLabel(kind: OperationPlanHistoryEntry["kind"]) {
       return "Delete";
     case "bili_favorite_folder_create":
       return "Create Folder";
+    case "bili_favorite_folder_rename":
+      return "Rename Folder";
   }
 }
 
@@ -112,6 +115,8 @@ function operationActionLabel(action: string) {
       return "Delete";
     case "create_folder":
       return "Create Folder";
+    case "rename_folder":
+      return "Rename Folder";
     default:
       return action;
   }
@@ -167,6 +172,8 @@ export function WorkstationPage() {
   const [folderCreateTitle, setFolderCreateTitle] = useState("");
   const [folderCreateIntro, setFolderCreateIntro] = useState("");
   const [folderCreatePrivacy, setFolderCreatePrivacy] = useState<FavoriteFolderPrivacy>("private");
+  const [folderRenameId, setFolderRenameId] = useState("");
+  const [folderRenameTitle, setFolderRenameTitle] = useState("");
   const [classifications, setClassifications] = useState<LlmClassificationItem[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
@@ -230,6 +237,11 @@ export function WorkstationPage() {
   const targetFolder = useMemo(
     () => favoriteFolders.find((folder) => folder.externalId === targetFolderId) ?? null,
     [favoriteFolders, targetFolderId]
+  );
+
+  const renameFolder = useMemo(
+    () => favoriteFolders.find((folder) => folder.externalId === folderRenameId) ?? null,
+    [favoriteFolders, folderRenameId]
   );
 
   const favoriteVisibleIds = useMemo(() => {
@@ -638,6 +650,44 @@ export function WorkstationPage() {
     }
   }
 
+  async function createFavoriteFolderRenamePlan() {
+    if (!renameFolder) {
+      setMessage("Choose a favorite folder before creating a rename draft.");
+      return;
+    }
+    const newTitle = folderRenameTitle.trim();
+    if (!newTitle) {
+      setMessage("New favorite folder title is required.");
+      return;
+    }
+    if (newTitle.length > 40) {
+      setMessage("Favorite folder title must be 40 characters or fewer.");
+      return;
+    }
+    if (newTitle === renameFolder.title.trim()) {
+      setMessage("New favorite folder title must differ from the current title.");
+      return;
+    }
+
+    setBusy("favorite-folder-rename-plan");
+    setMessage(null);
+    try {
+      const nextPlan = await tauri.createBiliFavoriteFolderRenamePlan({
+        folder: renameFolder,
+        newTitle,
+      });
+      const savedPlanId = await saveOperationPlan(nextPlan);
+      await refreshOperationHistory(savedPlanId);
+      setPlan(nextPlan);
+      const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
+      setMessage(`Created folder rename draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder rename draft creation failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function executeAudioPlan() {
     if (!plan) return;
     const confirmed = window.confirm(
@@ -817,6 +867,43 @@ export function WorkstationPage() {
     }
   }
 
+  async function executeFavoriteFolderRenamePlan() {
+    if (!plan || plan.kind !== "bili_favorite_folder_rename") return;
+    const pendingCount = plan.items.filter((item) => item.status === "pending").length;
+    if (pendingCount === 0) {
+      setMessage("This folder rename plan has no pending items to execute.");
+      return;
+    }
+    const item = plan.items[0];
+    const oldTitle = item.sourceCollectionTitle ?? item.title;
+    const newTitle = item.targetCollectionTitle ?? item.target ?? item.title;
+    const confirmed = window.confirm(`Rename Bilibili favorite folder "${oldTitle}" to "${newTitle}"?`);
+    if (!confirmed) return;
+
+    setBusy("favorite-folder-rename-execute");
+    setMessage(null);
+    try {
+      const result = await tauri.executeBiliFavoriteFolderRenamePlan({ plan, confirmed: true });
+      await updateBiliFavoriteFolderFromRenamePlan(result.plan);
+      const savedPlanId = await saveOperationPlan(result.plan);
+      await refreshOperationHistory(savedPlanId);
+      const storedFolders = await listLibraryCollections("bili_favorite_folder");
+      setFavoriteFolders(storedFolders);
+      setPlan(result.plan);
+      const renamedItem = result.plan.items.find((planItem) => planItem.status === "success");
+      if (renamedItem?.targetCollectionExternalId) {
+        setFolderRenameId(renamedItem.targetCollectionExternalId);
+      }
+      setFolderRenameTitle("");
+      const successCount = result.plan.items.filter((planItem) => planItem.status === "success").length;
+      setMessage(`Renamed ${successCount}/${result.plan.items.length} favorite folders.`);
+    } catch (err) {
+      setMessage(safeErrorMessage("Favorite folder rename failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-border p-6">
@@ -989,6 +1076,49 @@ export function WorkstationPage() {
                     Create Folder Draft
                   </button>
                 </div>
+                <div className="grid gap-2 border-t border-border pt-3">
+                  <label className="block text-sm text-muted-foreground">
+                    Rename folder
+                    <select
+                      value={folderRenameId}
+                      onChange={(event) => {
+                        const folder = favoriteFolders.find((candidate) => candidate.externalId === event.target.value) ?? null;
+                        setFolderRenameId(event.target.value);
+                        setFolderRenameTitle(folder?.title ?? "");
+                      }}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="">Select folder</option>
+                      {favoriteFolders.map((folder) => (
+                        <option key={folder.externalId} value={folder.externalId}>
+                          {folder.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm text-muted-foreground">
+                    New folder name
+                    <input
+                      value={folderRenameTitle}
+                      onChange={(event) => setFolderRenameTitle(event.target.value)}
+                      disabled={!renameFolder}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                    />
+                  </label>
+                  {renameFolder && (
+                    <p className="break-words text-xs text-muted-foreground">
+                      Folder id {renameFolder.externalId}. Rename preserves synced intro, privacy, and cover metadata.
+                    </p>
+                  )}
+                  <button
+                    onClick={() => void createFavoriteFolderRenamePlan()}
+                    disabled={busy !== null || !renameFolder}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
+                  >
+                    <FolderPen className="h-4 w-4" />
+                    Rename Folder Draft
+                  </button>
+                </div>
                 <label className="block text-sm text-muted-foreground">
                   Copy or move target
                   <select
@@ -1105,8 +1235,10 @@ export function WorkstationPage() {
                             <div className="mt-1 text-xs text-muted-foreground">
                               {operationActionLabel(item.action)}
                               {" · "}
-                              {item.sourceCollectionTitle ?? "Unknown source"}
-                              {item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
+                              {item.action === "rename_folder"
+                                ? `${item.sourceCollectionTitle ?? item.title} -> ${item.targetCollectionTitle ?? item.target ?? "New title"}`
+                                : item.sourceCollectionTitle ?? "Unknown source"}
+                              {item.action !== "rename_folder" && item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
                               {" · "}
                               {operationPlanItemStatusLabel(item.status)}
                             </div>
@@ -1147,10 +1279,16 @@ export function WorkstationPage() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         {operationActionLabel(item.action)}
                         {" · "}
-                        {item.action === "create_folder" ? folderPrivacyLabel(item.target) : item.sourceCollectionTitle ?? "Unknown source"}
+                        {item.action === "create_folder"
+                          ? folderPrivacyLabel(item.target)
+                          : item.action === "rename_folder"
+                            ? `${item.sourceCollectionTitle ?? item.title} -> ${item.targetCollectionTitle ?? item.target ?? "New title"}`
+                            : item.sourceCollectionTitle ?? "Unknown source"}
                         {item.action === "create_folder"
                           ? item.targetCollectionTitle ? ` · ${item.targetCollectionTitle}` : ""
-                          : item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
+                          : item.action === "rename_folder"
+                            ? ` · folder ${item.externalId}`
+                            : item.targetCollectionTitle ? ` -> ${item.targetCollectionTitle}` : ""}
                         {" · "}
                         {operationPlanItemStatusLabel(item.status)}
                       </div>
@@ -1198,6 +1336,16 @@ export function WorkstationPage() {
                   >
                     <FolderPlus className="h-4 w-4" />
                     Execute Create Folder
+                  </button>
+                )}
+                {plan.kind === "bili_favorite_folder_rename" && (
+                  <button
+                    onClick={() => void executeFavoriteFolderRenamePlan()}
+                    disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <FolderPen className="h-4 w-4" />
+                    Execute Rename Folder
                   </button>
                 )}
               </div>

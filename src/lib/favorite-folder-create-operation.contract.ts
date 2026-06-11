@@ -24,6 +24,7 @@ const plan: OperationPlan = {
       targetCollectionTitle: request.intro,
       resourceId: null,
       resourceType: null,
+      metadata: {},
     },
   ],
 };

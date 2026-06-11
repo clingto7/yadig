@@ -134,6 +134,7 @@ pub enum OperationPlanKind {
     BiliBatchMove,
     BiliBatchDelete,
     BiliFavoriteFolderCreate,
+    BiliFavoriteFolderRename,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +162,7 @@ impl OperationPlan {
                 target_collection_title: None,
                 resource_id: None,
                 resource_type: None,
+                metadata: serde_json::json!({}),
             })
             .collect();
 
@@ -264,6 +266,7 @@ impl OperationPlan {
                     target_collection_title: request.target_collection_title.clone(),
                     resource_id: candidate.resource_id,
                     resource_type: candidate.resource_type,
+                    metadata: serde_json::json!({}),
                 }
             })
             .collect();
@@ -304,6 +307,73 @@ impl OperationPlan {
                 target_collection_title: if intro.is_empty() { None } else { Some(intro) },
                 resource_id: None,
                 resource_type: None,
+                metadata: serde_json::json!({}),
+            }],
+        }
+    }
+
+    pub fn for_bili_favorite_folder_rename(request: FavoriteFolderRenamePlanRequest) -> Self {
+        let folder = request.folder;
+        let current_title = folder.title.trim().to_string();
+        let new_title = request.new_title.trim().to_string();
+        let media_id = folder.external_id.trim().to_string();
+        let metadata = rename_metadata_from_folder(&folder.raw_metadata);
+        let mutation_blocker = favorite_folder_mutation_blocker(&folder);
+        let (status, error) = if media_id.is_empty() {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder id is required".to_string()),
+            )
+        } else if new_title.is_empty() {
+            (
+                "blocked".to_string(),
+                Some("New favorite folder title is required".to_string()),
+            )
+        } else if new_title.chars().count() > 40 {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder title must be 40 characters or fewer".to_string()),
+            )
+        } else if new_title == current_title {
+            (
+                "blocked".to_string(),
+                Some("New favorite folder title must differ from the current title".to_string()),
+            )
+        } else if let Some(blocker) = mutation_blocker {
+            ("blocked".to_string(), Some(blocker))
+        } else if !metadata_has_required_rename_fields(&metadata) {
+            (
+                "blocked".to_string(),
+                Some("Favorite folder metadata is incomplete; resync before renaming".to_string()),
+            )
+        } else {
+            (pending_status(), None)
+        };
+
+        Self {
+            kind: OperationPlanKind::BiliFavoriteFolderRename,
+            items: vec![OperationPlanItem {
+                external_id: media_id.clone(),
+                title: current_title.clone(),
+                action: "rename_folder".to_string(),
+                target: if new_title.is_empty() {
+                    None
+                } else {
+                    Some(new_title.clone())
+                },
+                status,
+                error,
+                source_collection_external_id: Some(media_id.clone()),
+                source_collection_title: Some(current_title),
+                target_collection_external_id: Some(media_id),
+                target_collection_title: if new_title.is_empty() {
+                    None
+                } else {
+                    Some(new_title)
+                },
+                resource_id: None,
+                resource_type: None,
+                metadata,
             }],
         }
     }
@@ -332,6 +402,8 @@ pub struct OperationPlanItem {
     pub resource_id: Option<String>,
     #[serde(default)]
     pub resource_type: Option<String>,
+    #[serde(default = "empty_metadata")]
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +416,10 @@ pub struct AudioExtractionCandidate {
 
 fn pending_status() -> String {
     "pending".to_string()
+}
+
+fn empty_metadata() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +484,64 @@ pub struct FavoriteFolderCreatePlanRequest {
     pub title: String,
     pub intro: String,
     pub privacy: FavoriteFolderPrivacy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoriteFolderRenamePlanRequest {
+    pub folder: LibraryCollection,
+    pub new_title: String,
+}
+
+fn rename_metadata_from_folder(raw_metadata: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "intro": raw_metadata.get("intro").cloned().unwrap_or(serde_json::Value::Null),
+        "privacy": raw_metadata.get("privacy").cloned().unwrap_or(serde_json::Value::Null),
+        "cover": raw_metadata.get("cover").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn favorite_folder_mutation_blocker(folder: &LibraryCollection) -> Option<String> {
+    let metadata = &folder.raw_metadata;
+    let explicit_false_flags = [
+        "can_edit",
+        "canEdit",
+        "editable",
+        "is_owner",
+        "isOwner",
+        "owned",
+    ];
+    if explicit_false_flags
+        .iter()
+        .any(|key| metadata.get(*key).and_then(|value| value.as_bool()) == Some(false))
+    {
+        return Some("Favorite folder is not editable by the current account".to_string());
+    }
+
+    let default_flags = ["is_default", "isDefault", "default"];
+    if default_flags
+        .iter()
+        .any(|key| metadata.get(*key).and_then(|value| value.as_bool()) == Some(true))
+        || folder.title.trim() == "默认收藏夹"
+    {
+        return Some("Default favorite folders are not supported for rename".to_string());
+    }
+
+    None
+}
+
+fn metadata_has_required_rename_fields(metadata: &serde_json::Value) -> bool {
+    metadata
+        .get("intro")
+        .is_some_and(|value| value.is_string())
+        && metadata
+            .get("privacy")
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+            })
+            .is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -558,6 +692,136 @@ mod favorite_operation_plan_tests {
         assert_eq!(
             item.error.as_deref(),
             Some("Favorite folder title is required")
+        );
+    }
+
+    #[test]
+    fn builds_pending_folder_rename_plan_preserving_metadata() {
+        let folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "Old folder".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "Old folder",
+                "intro": "Keep this intro",
+                "privacy": 1,
+                "cover": "https://i0.hdslb.com/cover.jpg"
+            }),
+        );
+
+        let plan = OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+            folder,
+            new_title: "New folder".to_string(),
+        });
+
+        assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderRename);
+        let item = &plan.items[0];
+        assert_eq!(item.action, "rename_folder");
+        assert_eq!(item.status, "pending");
+        assert_eq!(item.external_id, "300");
+        assert_eq!(item.title, "Old folder");
+        assert_eq!(item.target.as_deref(), Some("New folder"));
+        assert_eq!(item.source_collection_title.as_deref(), Some("Old folder"));
+        assert_eq!(item.target_collection_title.as_deref(), Some("New folder"));
+        assert_eq!(item.metadata["intro"].as_str(), Some("Keep this intro"));
+        assert_eq!(item.metadata["privacy"].as_i64(), Some(1));
+        assert_eq!(
+            item.metadata["cover"].as_str(),
+            Some("https://i0.hdslb.com/cover.jpg")
+        );
+    }
+
+    #[test]
+    fn blocks_folder_rename_for_invalid_or_stale_metadata() {
+        let folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "Old folder".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "Old folder",
+                "intro": "Keep this intro"
+            }),
+        );
+
+        let plan = OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+            folder,
+            new_title: "Old folder".to_string(),
+        });
+
+        let item = &plan.items[0];
+        assert_eq!(plan.kind, OperationPlanKind::BiliFavoriteFolderRename);
+        assert_eq!(item.status, "blocked");
+        assert_eq!(
+            item.error.as_deref(),
+            Some("New favorite folder title must differ from the current title")
+        );
+
+        let stale_folder = LibraryCollection::from_bili_favorite_folder(
+            "301".to_string(),
+            "Needs sync".to_string(),
+            serde_json::json!({"id": 301, "title": "Needs sync"}),
+        );
+        let stale_plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder: stale_folder,
+                new_title: "Synced later".to_string(),
+            });
+
+        assert_eq!(stale_plan.items[0].status, "blocked");
+        assert_eq!(
+            stale_plan.items[0].error.as_deref(),
+            Some("Favorite folder metadata is incomplete; resync before renaming")
+        );
+    }
+
+    #[test]
+    fn blocks_folder_rename_for_default_or_uneditable_folder() {
+        let default_folder = LibraryCollection::from_bili_favorite_folder(
+            "300".to_string(),
+            "默认收藏夹".to_string(),
+            serde_json::json!({
+                "id": 300,
+                "title": "默认收藏夹",
+                "intro": "",
+                "privacy": 1,
+                "is_default": true
+            }),
+        );
+
+        let default_plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder: default_folder,
+                new_title: "Should block".to_string(),
+            });
+
+        assert_eq!(default_plan.items[0].status, "blocked");
+        assert_eq!(
+            default_plan.items[0].error.as_deref(),
+            Some("Default favorite folders are not supported for rename")
+        );
+
+        let uneditable_folder = LibraryCollection::from_bili_favorite_folder(
+            "301".to_string(),
+            "Other owner".to_string(),
+            serde_json::json!({
+                "id": 301,
+                "title": "Other owner",
+                "intro": "",
+                "privacy": 0,
+                "can_edit": false
+            }),
+        );
+
+        let uneditable_plan =
+            OperationPlan::for_bili_favorite_folder_rename(FavoriteFolderRenamePlanRequest {
+                folder: uneditable_folder,
+                new_title: "Should block".to_string(),
+            });
+
+        assert_eq!(uneditable_plan.items[0].status, "blocked");
+        assert_eq!(
+            uneditable_plan.items[0].error.as_deref(),
+            Some("Favorite folder is not editable by the current account")
         );
     }
 

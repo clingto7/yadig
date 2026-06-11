@@ -18,6 +18,7 @@ const copyPlan: OperationPlan = {
       targetCollectionTitle: "Samples",
       resourceId: "987654321",
       resourceType: "2",
+      metadata: {},
     },
   ],
 };

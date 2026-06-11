@@ -212,6 +212,7 @@ type OperationPlanItemRow = {
   target_collection_title: string | null;
   resource_id: string | null;
   resource_type: string | null;
+  metadata_json: string;
   created_at: string;
   updated_at: string;
 };
@@ -232,7 +233,11 @@ type LlmClassificationRow = {
 
 export type BiliFavoriteOperationPlanKind = Extract<
   OperationPlan["kind"],
-  "bili_batch_copy" | "bili_batch_move" | "bili_batch_delete" | "bili_favorite_folder_create"
+  | "bili_batch_copy"
+  | "bili_batch_move"
+  | "bili_batch_delete"
+  | "bili_favorite_folder_create"
+  | "bili_favorite_folder_rename"
 >;
 
 export type OperationPlanHistoryItem = OperationPlanItem & {
@@ -321,6 +326,7 @@ function mapOperationPlanItemRow(row: OperationPlanItemRow): OperationPlanHistor
     targetCollectionTitle: row.target_collection_title,
     resourceId: row.resource_id,
     resourceType: row.resource_type,
+    metadata: parseRawMetadata(row.metadata_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -898,8 +904,8 @@ export async function saveOperationPlan(plan: OperationPlan): Promise<number | n
         (plan_id, external_id, title, action, target, status, error,
          source_collection_external_id, source_collection_title,
          target_collection_external_id, target_collection_title,
-         resource_id, resource_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         resource_id, resource_type, metadata_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         planId,
         item.externalId,
@@ -914,6 +920,7 @@ export async function saveOperationPlan(plan: OperationPlan): Promise<number | n
         item.targetCollectionTitle ?? null,
         item.resourceId ?? null,
         item.resourceType ?? null,
+        JSON.stringify(item.metadata ?? {}),
       ]
     );
   }
@@ -926,7 +933,7 @@ export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<
   const planRows = await d.select<OperationPlanRow[]>(
     `SELECT id, kind, status, created_at, updated_at
      FROM operation_plans
-     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete', 'bili_favorite_folder_create')
+     WHERE kind IN ('bili_batch_copy', 'bili_batch_move', 'bili_batch_delete', 'bili_favorite_folder_create', 'bili_favorite_folder_rename')
      ORDER BY datetime(created_at) DESC, id DESC
      LIMIT $1`,
     [limit]
@@ -939,7 +946,7 @@ export async function listBiliFavoriteOperationPlanHistory(limit = 20): Promise<
     `SELECT id, plan_id, external_id, title, action, target, status, error,
             source_collection_external_id, source_collection_title,
             target_collection_external_id, target_collection_title,
-            resource_id, resource_type, created_at, updated_at
+            resource_id, resource_type, metadata_json, created_at, updated_at
      FROM operation_plan_items
      WHERE plan_id IN (${placeholders})
      ORDER BY plan_id DESC, id ASC`,
@@ -1164,6 +1171,52 @@ export async function upsertBiliFavoriteFolderFromCreatePlan(plan: OperationPlan
         last_synced_at = datetime('now'),
         updated_at = datetime('now')`,
       [externalId, item.title, JSON.stringify(rawMetadata)]
+    );
+  }
+}
+
+export async function updateBiliFavoriteFolderFromRenamePlan(plan: OperationPlan): Promise<void> {
+  if (plan.kind !== "bili_favorite_folder_rename") return;
+
+  const d = await getDb();
+  for (const item of plan.items) {
+    if (item.status !== "success") continue;
+
+    const externalId = item.targetCollectionExternalId?.trim()
+      || item.sourceCollectionExternalId?.trim()
+      || item.externalId.trim();
+    const newTitle = item.targetCollectionTitle?.trim()
+      || item.target?.trim()
+      || item.title.trim();
+    if (!externalId || !newTitle) {
+      throw new Error(`Cannot save renamed favorite folder ${item.title}: missing folder id or title`);
+    }
+
+    const currentRows = await d.select<{ raw_metadata: string }[]>(
+      `SELECT raw_metadata
+       FROM library_collections
+       WHERE source = 'bilibili'
+         AND external_id = $1
+         AND collection_type = 'bili_favorite_folder'
+       LIMIT 1`,
+      [externalId]
+    );
+    const rawMetadata = {
+      ...parseRawMetadata(currentRows[0]?.raw_metadata ?? "{}"),
+      ...item.metadata,
+      id: externalId,
+      title: newTitle,
+    };
+
+    await d.execute(
+      `UPDATE library_collections
+       SET title = $1,
+           raw_metadata = $2,
+           updated_at = datetime('now')
+       WHERE source = 'bilibili'
+         AND external_id = $3
+         AND collection_type = 'bili_favorite_folder'`,
+      [newTitle, JSON.stringify(rawMetadata), externalId]
     );
   }
 }

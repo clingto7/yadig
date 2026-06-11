@@ -200,12 +200,18 @@ export interface FavoriteFolderCreatePlanRequest {
   privacy: FavoriteFolderPrivacy;
 }
 
+export interface FavoriteFolderRenamePlanRequest {
+  folder: LibraryCollection;
+  newTitle: string;
+}
+
 export type OperationPlanKind =
   | "bili_batch_audio_extraction"
   | "bili_batch_copy"
   | "bili_batch_move"
   | "bili_batch_delete"
-  | "bili_favorite_folder_create";
+  | "bili_favorite_folder_create"
+  | "bili_favorite_folder_rename";
 
 export interface OperationPlanItem {
   externalId: string;
@@ -220,6 +226,7 @@ export interface OperationPlanItem {
   targetCollectionTitle: string | null;
   resourceId: string | null;
   resourceType: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export interface OperationPlan {
@@ -253,6 +260,10 @@ export interface BiliFavoriteDeleteExecutionResult {
 }
 
 export interface BiliFavoriteFolderCreateExecutionResult {
+  plan: OperationPlan;
+}
+
+export interface BiliFavoriteFolderRenameExecutionResult {
   plan: OperationPlan;
 }
 
@@ -340,6 +351,9 @@ export const tauri = {
   createBiliFavoriteFolderCreatePlan: (request: FavoriteFolderCreatePlanRequest): Promise<OperationPlan> =>
     invoke("create_bili_favorite_folder_create_plan", { request }),
 
+  createBiliFavoriteFolderRenamePlan: (request: FavoriteFolderRenamePlanRequest): Promise<OperationPlan> =>
+    invoke("create_bili_favorite_folder_rename_plan", { request }),
+
   executeBiliAudioExtractionPlan: (params: { plan: OperationPlan }): Promise<BiliAudioExtractionExecutionResult> =>
     invoke("execute_bili_audio_extraction_plan", params),
 
@@ -354,6 +368,9 @@ export const tauri = {
 
   executeBiliFavoriteFolderCreatePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteFolderCreateExecutionResult> =>
     invoke("execute_bili_favorite_folder_create_plan", params),
+
+  executeBiliFavoriteFolderRenamePlan: (params: { plan: OperationPlan; confirmed: boolean }): Promise<BiliFavoriteFolderRenameExecutionResult> =>
+    invoke("execute_bili_favorite_folder_rename_plan", params),
 
   // YouTube
   youtubeExtractAudio: (params: { url: string }): Promise<YoutubeExtractionResult> =>
