@@ -20,12 +20,20 @@ Implement `SourceProvider` for Bilibili so it appears in yadig's unified search 
 
 ## Acceptance criteria
 
-- [ ] Bilibili appears in `list_sources` output
-- [ ] `search_sources` with Bilibili enabled returns Bilibili results alongside other sources
-- [ ] Each result has correct title, URL, thumbnail, author, duration
-- [ ] Toggling Bilibili off in settings excludes it from search
+- [x] Bilibili appears in `list_sources` output
+- [x] `search_sources` with Bilibili enabled returns Bilibili results alongside other sources
+- [x] Each result has correct title, URL, thumbnail, author, duration
+- [x] Toggling Bilibili off in settings excludes it from search
 - [ ] Search completes within reasonable time (< 3s)
-- [ ] `cargo check` passes
+- [x] `cargo check` passes
+
+## Implementation notes
+
+- `BiliSource` is registered in `src-tauri/src/lib.rs` with id `bilibili`, name `Bilibili`, kind `api`, and base URL `https://www.bilibili.com`.
+- Search uses Bilibili's video search endpoint and maps title, BVID URL, thumbnail, author, duration, `bvid`, and `cid` into `ContentItem`.
+- Search results intentionally leave `audio_url` and `download_url` empty so playback/extraction can fetch stream URLs lazily.
+- Tests cover Bilibili result mapping and registry exclusion when a source is disabled.
+- A live network timing smoke test against Bilibili has not been run in this slice, so the `<3s` criterion remains open.
 
 ## Blocked by
 

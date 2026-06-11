@@ -1,5 +1,5 @@
 use crate::bili::auth::BiliAuth;
-use crate::bili::types::SearchResponse;
+use crate::bili::types::{SearchResponse, SearchResultItem};
 use crate::error::{Result, YadigError};
 use crate::http_client;
 use crate::source::provider::SourceProvider;
@@ -74,43 +74,7 @@ impl SourceProvider for BiliSource {
         let items: Vec<ContentItem> = results
             .into_iter()
             .enumerate()
-            .filter_map(|(i, r)| {
-                let bvid = r.bvid?;
-                let title_html = r.title.unwrap_or_default();
-                // Strip HTML tags from title
-                let title = strip_html_tags(&title_html);
-                let author = r.author;
-                let duration_str = r.duration.as_deref().unwrap_or("0:00");
-                let duration = parse_duration(duration_str);
-                let pic = r.pic.map(|p| {
-                    if p.starts_with("//") {
-                        format!("https:{}", p)
-                    } else {
-                        p.to_string()
-                    }
-                });
-                let url = format!("https://www.bilibili.com/video/{}", bvid);
-                let cid = r.id.unwrap_or(0);
-
-                Some(ContentItem {
-                    source_id: "bilibili".to_string(),
-                    title,
-                    url,
-                    summary: r.description,
-                    author,
-                    published_at: None,
-                    image_url: pic,
-                    audio_url: None, // lazy — fetched on demand via bili_get_playurl
-                    download_url: None,
-                    duration: Some(duration),
-                    license: None,
-                    extra: Some(serde_json::json!({
-                        "bvid": bvid,
-                        "cid": cid,
-                    })),
-                    relevance_score: Some(1.0 - (i as f32 * 0.02)),
-                })
-            })
+            .filter_map(|(i, result)| map_search_result_item(result, i))
             .collect();
 
         Ok(items)
@@ -120,6 +84,42 @@ impl SourceProvider for BiliSource {
         // Bilibili ranking API for music zone — return empty for now
         Ok(Vec::new())
     }
+}
+
+fn map_search_result_item(result: SearchResultItem, index: usize) -> Option<ContentItem> {
+    let bvid = result.bvid?;
+    let title_html = result.title.unwrap_or_default();
+    let title = strip_html_tags(&title_html);
+    let duration_str = result.duration.as_deref().unwrap_or("0:00");
+    let duration = parse_duration(duration_str);
+    let image_url = result.pic.map(|pic| {
+        if pic.starts_with("//") {
+            format!("https:{}", pic)
+        } else {
+            pic
+        }
+    });
+    let cid = result.id.unwrap_or(0);
+    let url = format!("https://www.bilibili.com/video/{}", bvid);
+
+    Some(ContentItem {
+        source_id: "bilibili".to_string(),
+        title,
+        url,
+        summary: result.description,
+        author: result.author,
+        published_at: None,
+        image_url,
+        audio_url: None,
+        download_url: None,
+        duration: Some(duration),
+        license: None,
+        extra: Some(serde_json::json!({
+            "bvid": bvid,
+            "cid": cid,
+        })),
+        relevance_score: Some(1.0 - (index as f32 * 0.02)),
+    })
 }
 
 /// Strip HTML tags from a string.
@@ -183,5 +183,46 @@ mod tests {
     fn parse_duration_invalid() {
         assert_eq!(parse_duration("abc"), 0);
         assert_eq!(parse_duration(""), 0);
+    }
+
+    #[test]
+    fn maps_search_result_item_into_content_item_contract() {
+        let item = crate::bili::types::SearchResultItem {
+            bvid: Some("BV1contract".to_string()),
+            title: Some("Live <em>cover</em>".to_string()),
+            author: Some("Music UP".to_string()),
+            duration: Some("1:02:03".to_string()),
+            pic: Some("//i0.hdslb.com/bfs/archive/test.jpg".to_string()),
+            description: Some("Session description".to_string()),
+            id: Some(998877),
+        };
+
+        let mapped = map_search_result_item(item, 0).expect("valid Bilibili result should map");
+
+        assert_eq!(mapped.source_id, "bilibili");
+        assert_eq!(mapped.title, "Live cover");
+        assert_eq!(mapped.url, "https://www.bilibili.com/video/BV1contract");
+        assert_eq!(
+            mapped.image_url.as_deref(),
+            Some("https://i0.hdslb.com/bfs/archive/test.jpg")
+        );
+        assert_eq!(mapped.author.as_deref(), Some("Music UP"));
+        assert_eq!(mapped.duration, Some(3723));
+        assert_eq!(mapped.audio_url, None);
+        assert_eq!(mapped.download_url, None);
+        assert_eq!(
+            mapped
+                .extra
+                .as_ref()
+                .and_then(|extra| extra["bvid"].as_str()),
+            Some("BV1contract")
+        );
+        assert_eq!(
+            mapped
+                .extra
+                .as_ref()
+                .and_then(|extra| extra["cid"].as_i64()),
+            Some(998877)
+        );
     }
 }

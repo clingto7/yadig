@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use crate::error::Result;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 pub struct SourceRegistry {
     providers: HashMap<String, Box<dyn SourceProvider>>,
@@ -103,7 +103,11 @@ impl SourceRegistry {
         })
     }
 
-    pub async fn fetch_latest(&self, source_ids: &[String], limit: usize) -> Result<Vec<ContentItem>> {
+    pub async fn fetch_latest(
+        &self,
+        source_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<ContentItem>> {
         // Snapshot disabled set so MutexGuard is dropped before .await
         let disabled_ids = self.disabled.lock().unwrap().clone();
         let mut futures = Vec::new();
@@ -133,5 +137,81 @@ impl SourceRegistry {
         }
 
         Ok(items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct StaticSource {
+        id: &'static str,
+    }
+
+    #[async_trait]
+    impl SourceProvider for StaticSource {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn name(&self) -> &str {
+            self.id
+        }
+
+        fn kind(&self) -> SourceKind {
+            SourceKind::Api
+        }
+
+        fn base_url(&self) -> &str {
+            "https://example.invalid"
+        }
+
+        async fn search(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _page: usize,
+        ) -> Result<Vec<ContentItem>> {
+            Ok(vec![ContentItem {
+                source_id: self.id.to_string(),
+                title: format!("{} result", self.id),
+                url: format!("https://example.invalid/{}", self.id),
+                summary: None,
+                author: None,
+                published_at: None,
+                image_url: None,
+                audio_url: None,
+                download_url: None,
+                duration: None,
+                license: None,
+                extra: None,
+                relevance_score: Some(1.0),
+            }])
+        }
+
+        async fn fetch_latest(&self, _limit: usize) -> Result<Vec<ContentItem>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_source_is_excluded_from_all_source_search() {
+        let mut registry = SourceRegistry::new();
+        registry.register(Box::new(StaticSource { id: "bilibili" }));
+        registry.register(Box::new(StaticSource { id: "other" }));
+
+        registry.set_enabled("bilibili", false);
+        let sources = registry.list_sources();
+        let bili_source = sources
+            .iter()
+            .find(|source| source.id == "bilibili")
+            .expect("Bilibili source should be listed");
+        assert!(!bili_source.is_active);
+
+        let result = registry.search("music", &[], 10, 1).await.unwrap();
+
+        assert!(result.items.iter().all(|item| item.source_id != "bilibili"));
+        assert!(result.items.iter().any(|item| item.source_id == "other"));
     }
 }
