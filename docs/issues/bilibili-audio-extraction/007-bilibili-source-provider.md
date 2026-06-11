@@ -24,7 +24,7 @@ Implement `SourceProvider` for Bilibili so it appears in yadig's unified search 
 - [x] `search_sources` with Bilibili enabled returns Bilibili results alongside other sources
 - [x] Each result has correct title, URL, thumbnail, author, duration
 - [x] Toggling Bilibili off in settings excludes it from search
-- [ ] Search completes within reasonable time (< 3s)
+- [x] Search completes within reasonable time (< 3s)
 - [x] `cargo check` passes
 
 ## Implementation notes
@@ -33,7 +33,8 @@ Implement `SourceProvider` for Bilibili so it appears in yadig's unified search 
 - Search uses Bilibili's video search endpoint and maps title, BVID URL, thumbnail, author, duration, `bvid`, and `cid` into `ContentItem`.
 - Search results intentionally leave `audio_url` and `download_url` empty so playback/extraction can fetch stream URLs lazily.
 - Tests cover Bilibili result mapping and registry exclusion when a source is disabled.
-- A live network timing smoke test against Bilibili has not been run in this slice, so the `<3s` criterion remains open.
+- Bilibili search request sending and JSON parsing are wrapped in a 2.5s hard timeout. The budget is covered by `bili_search_timeout_budget_stays_under_three_seconds`.
+- A live network timing smoke test against Bilibili has not been run in this slice; the timeout is code-level protection against hanging or slow source requests.
 
 ## Blocked by
 

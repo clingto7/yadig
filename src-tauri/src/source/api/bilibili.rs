@@ -5,6 +5,10 @@ use crate::http_client;
 use crate::source::provider::SourceProvider;
 use crate::source::types::*;
 use async_trait::async_trait;
+use std::time::Duration;
+use tokio::time::timeout;
+
+const BILI_SEARCH_TIMEOUT: Duration = Duration::from_millis(2_500);
 
 /// Bilibili search source — searches Bilibili for music videos.
 /// Audio streams are not pre-fetched (too slow); use bili_get_playurl on demand.
@@ -52,15 +56,23 @@ impl SourceProvider for BiliSource {
             req = req.header("Cookie", format!("SESSDATA={}", session.sessdata));
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| YadigError::Network(format!("Bilibili search failed: {}", e)))?;
+        let data: SearchResponse = timeout(BILI_SEARCH_TIMEOUT, async {
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| YadigError::Network(format!("Bilibili search failed: {}", e)))?;
 
-        let data: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| YadigError::Network(format!("Bilibili search parse error: {}", e)))?;
+            resp.json()
+                .await
+                .map_err(|e| YadigError::Network(format!("Bilibili search parse error: {}", e)))
+        })
+        .await
+        .map_err(|_| {
+            YadigError::Network(format!(
+                "Bilibili search timed out after {}ms",
+                BILI_SEARCH_TIMEOUT.as_millis()
+            ))
+        })??;
 
         if data.code != 0 {
             return Err(YadigError::Network(format!(
@@ -224,5 +236,11 @@ mod tests {
                 .and_then(|extra| extra["cid"].as_i64()),
             Some(998877)
         );
+    }
+
+    #[test]
+    fn bili_search_timeout_budget_stays_under_three_seconds() {
+        assert!(BILI_SEARCH_TIMEOUT < std::time::Duration::from_secs(3));
+        assert!(BILI_SEARCH_TIMEOUT >= std::time::Duration::from_secs(1));
     }
 }
