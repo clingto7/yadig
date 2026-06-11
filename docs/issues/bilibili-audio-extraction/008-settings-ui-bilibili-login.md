@@ -21,12 +21,19 @@ Add a Bilibili login section to the settings page, following the existing Discog
 
 - [ ] QR login flow works: scan → confirm → settings shows "Logged in as {username}"
 - [ ] Cookie login flow works: paste SESSDATA → settings shows logged in
-- [ ] Login persists across app restart
-- [ ] Logout clears session and UI updates
-- [ ] QR code expiration is handled with a "Refresh QR Code" button
-- [ ] Account tier (premium/standard) is displayed
+- [x] Login persists across app restart
+- [x] Logout clears session and UI updates
+- [x] QR code expiration is handled with a "Refresh QR Code" button
+- [x] Account tier (premium/standard) is displayed
 - [ ] Error messages are user-friendly (not raw API errors)
 - [ ] `pnpm build` passes
+
+## Notes
+
+- Session persistence is implemented through `src/lib/bili-session-store.ts` and restored in `src/App.tsx` through `bili_restore_session`.
+- Settings logout calls `bili_logout`, clears the persisted Bilibili session, and refreshes status.
+- QR login expiration now uses `src/lib/bili-login-ui.ts` state mapping and shows an explicit `Refresh QR Code` button.
+- Account tier is displayed from `bili_session_status` as Premium or standard max-quality copy.
 
 ## Blocked by
 

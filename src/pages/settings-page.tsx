@@ -5,6 +5,7 @@ import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
 import type { LlmProviderTestError, LlmProviderTestErrorKind } from "@/lib/tauri";
 import { clearPersistedBiliSession, savePersistedBiliSession } from "@/lib/bili-session-store";
+import { qrLoginUiState } from "@/lib/bili-login-ui";
 
 const DEFAULT_LLM_PROVIDER = "openai-compatible";
 const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
@@ -345,6 +346,7 @@ function BiliLoginSection() {
   const [qrKey, setQrKey] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<string>("");
   const [qrImg, setQrImg] = useState<string | null>(null);
+  const [qrExpired, setQrExpired] = useState(false);
   const [showCookieInput, setShowCookieInput] = useState(false);
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [sessdata, setSessdata] = useState("");
@@ -375,24 +377,34 @@ function BiliLoginSection() {
       try {
         const resp = await tauri.biliQrLoginPoll({ qrcodeKey: qrKey });
         if (resp.code === 0) {
+          const ui = qrLoginUiState(resp.code);
           if (resp.session) {
             await savePersistedBiliSession(resp.session);
           }
-          setQrStatus("Login successful!");
+          setQrStatus(ui.message);
+          setQrExpired(ui.expired);
           setQrUrl(null);
           setQrKey(null);
+          setQrImg(null);
           await checkStatus();
           clearInterval(interval);
         } else if (resp.code === 86090) {
-          setQrStatus("Scanned — confirm on your phone");
+          const ui = qrLoginUiState(resp.code);
+          setQrStatus(ui.message);
+          setQrExpired(ui.expired);
         } else if (resp.code === 86038) {
-          setQrStatus("QR code expired — click to refresh");
+          const ui = qrLoginUiState(resp.code);
+          setQrStatus(ui.message);
+          setQrExpired(ui.expired);
           clearInterval(interval);
         } else {
-          setQrStatus("Waiting for scan...");
+          const ui = qrLoginUiState(resp.code);
+          setQrStatus(ui.message);
+          setQrExpired(ui.expired);
         }
       } catch (e) {
         setQrStatus(`Error: ${e}`);
+        setQrExpired(false);
         clearInterval(interval);
       }
     }, 2000);
@@ -401,6 +413,9 @@ function BiliLoginSection() {
 
   async function startQrLogin() {
     setError(null);
+    setQrExpired(false);
+    setQrStatus("Generating QR code...");
+    setQrImg(null);
     try {
       const resp = await tauri.biliQrLoginStart();
       setQrUrl(resp.url);
@@ -540,6 +555,15 @@ function BiliLoginSection() {
                   className="mx-auto h-48 w-48"
                 />
                 <p className="mt-2 text-sm text-muted-foreground">{qrStatus}</p>
+                {qrExpired && (
+                  <button
+                    onClick={startQrLogin}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-secondary"
+                  >
+                    <QrCode className="h-3.5 w-3.5" />
+                    Refresh QR Code
+                  </button>
+                )}
                 <p className="mt-1 text-xs text-muted-foreground break-all">
                   <a href={qrUrl!} target="_blank" rel="noopener noreferrer"
                      className="hover:text-primary underline">
