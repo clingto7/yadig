@@ -215,10 +215,13 @@ export const tauri = {
   biliQrLoginPoll: (params: { qrcodeKey: string }): Promise<{ code: number; message: string; session: BiliSession | null }> =>
     invoke("bili_qr_login_poll", params),
 
-  biliCookieLogin: (params: { sessdata: string }): Promise<void> =>
+  biliCookieLogin: (params: { sessdata: string }): Promise<BiliSession> =>
     invoke("bili_cookie_login", params),
 
-  biliPasswordLogin: (params: { username: string; password: string }): Promise<string> =>
+  biliRestoreSession: (params: { session: BiliSession }): Promise<void> =>
+    invoke("bili_restore_session", params),
+
+  biliPasswordLogin: (params: { username: string; password: string }): Promise<BiliSession> =>
     invoke("bili_password_login", params),
 
   biliLogout: (): Promise<void> => invoke("bili_logout"),

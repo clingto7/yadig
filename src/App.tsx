@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,8 +9,11 @@ import { ChatPage } from "@/pages/chat-page";
 import { SettingsPage } from "@/pages/settings-page";
 import { WorkstationPage } from "@/pages/workstation-page";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { clearPersistedBiliSession, loadPersistedBiliSession } from "@/lib/bili-session-store";
 
 export default function App() {
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -35,11 +38,40 @@ export default function App() {
             )
           );
         }
+
+        // Restore Bilibili session into the Rust auth state before pages query status.
+        const biliSession = await loadPersistedBiliSession();
+        if (biliSession) {
+          try {
+            await invoke("bili_restore_session", { session: biliSession });
+            try {
+              const status = await invoke<{ loggedIn: boolean }>("bili_session_status");
+              if (!status.loggedIn) {
+                await clearPersistedBiliSession();
+              }
+            } catch (err) {
+              console.error("Failed to verify restored Bilibili session:", err);
+            }
+          } catch (err) {
+            await clearPersistedBiliSession();
+            console.error("Failed to restore Bilibili session:", err);
+          }
+        }
       } catch (err) {
         console.error("Failed to load settings from store:", err);
+      } finally {
+        setSettingsLoaded(true);
       }
     })();
   }, []);
+
+  if (!settingsLoaded) {
+    return (
+      <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">
+        Loading settings...
+      </div>
+    );
+  }
 
   return (
     <ErrorBoundary>

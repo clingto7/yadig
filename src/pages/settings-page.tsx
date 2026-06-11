@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Key, Eye, EyeOff, LogIn, LogOut, QrCode, Cookie } from "lucide-react";
 import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
+import { clearPersistedBiliSession, savePersistedBiliSession } from "@/lib/bili-session-store";
 
 export function SettingsPage() {
   const { data: sources } = useQuery({
@@ -292,6 +293,9 @@ function BiliLoginSection() {
     try {
       const s = await tauri.biliSessionStatus();
       setStatus(s);
+      if (!s.loggedIn) {
+        await clearPersistedBiliSession();
+      }
     } catch {
       setStatus({ loggedIn: false, username: null, isPremium: false });
     } finally {
@@ -308,6 +312,9 @@ function BiliLoginSection() {
       try {
         const resp = await tauri.biliQrLoginPoll({ qrcodeKey: qrKey });
         if (resp.code === 0) {
+          if (resp.session) {
+            await savePersistedBiliSession(resp.session);
+          }
           setQrStatus("Login successful!");
           setQrUrl(null);
           setQrKey(null);
@@ -353,7 +360,8 @@ function BiliLoginSection() {
   async function handleCookieLogin() {
     setError(null);
     try {
-      await tauri.biliCookieLogin({ sessdata: sessdata.trim() });
+      const session = await tauri.biliCookieLogin({ sessdata: sessdata.trim() });
+      await savePersistedBiliSession(session);
       setSessdata("");
       setShowCookieInput(false);
       await checkStatus();
@@ -365,8 +373,8 @@ function BiliLoginSection() {
   async function handlePasswordLogin() {
     setError(null);
     try {
-      const msg = await tauri.biliPasswordLogin({ username: biliUsername.trim(), password: biliPassword });
-      console.log("Password login:", msg);
+      const session = await tauri.biliPasswordLogin({ username: biliUsername.trim(), password: biliPassword });
+      await savePersistedBiliSession(session);
       setBiliUsername("");
       setBiliPassword("");
       setShowPasswordInput(false);
@@ -379,6 +387,7 @@ function BiliLoginSection() {
   async function handleLogout() {
     try {
       await tauri.biliLogout();
+      await clearPersistedBiliSession();
       await checkStatus();
     } catch (e) {
       setError(`Logout failed: ${e}`);

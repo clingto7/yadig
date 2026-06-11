@@ -118,17 +118,29 @@ pub async fn bili_qr_login_poll(
 
 /// Login with Bilibili cookie (SESSDATA).
 #[tauri::command]
-pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> Result<()> {
+pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> Result<BiliSession> {
     let cookie = sessdata.trim();
     if cookie.is_empty() {
         return Err(YadigError::NotFound("SESSDATA cannot be empty".into()));
     }
-    if let Some(session) = parse_cookie_session(cookie) {
-        auth.set_session(session);
+    let session = if let Some(session) = parse_cookie_session(cookie) {
+        normalize_persisted_session(session)?
     } else {
-        auth.set_cookie(cookie);
-    }
-    Ok(())
+        BiliSession {
+            sessdata: cookie.to_string(),
+            bili_jct: String::new(),
+            dede_user_id: String::new(),
+            vip_status: 0,
+        }
+    };
+    auth.set_session(session.clone());
+    Ok(session)
+}
+
+/// Restore a Bilibili session loaded by the frontend from Tauri Store.
+#[tauri::command]
+pub async fn bili_restore_session(auth: State<'_, BiliAuth>, session: BiliSession) -> Result<()> {
+    restore_persisted_session(&auth, session)
 }
 
 /// Login with Bilibili username and password.
@@ -139,7 +151,7 @@ pub async fn bili_password_login(
     auth: State<'_, BiliAuth>,
     username: String,
     password: String,
-) -> Result<String> {
+) -> Result<BiliSession> {
     if username.trim().is_empty() || password.trim().is_empty() {
         return Err(YadigError::NotFound(
             "Username and password cannot be empty".into(),
@@ -202,13 +214,35 @@ pub async fn bili_password_login(
             dede_user_id,
             vip_status: 0,
         };
-        auth.set_session(session);
-        Ok("Login successful".to_string())
+        auth.set_session(session.clone());
+        Ok(session)
     } else {
         Err(YadigError::NotFound(
             "Login succeeded but couldn't extract session cookies".into(),
         ))
     }
+}
+
+fn restore_persisted_session(auth: &BiliAuth, session: BiliSession) -> Result<()> {
+    let session = normalize_persisted_session(session)?;
+    auth.set_session(session);
+    Ok(())
+}
+
+fn normalize_persisted_session(session: BiliSession) -> Result<BiliSession> {
+    let sessdata = session.sessdata.trim().to_string();
+    if sessdata.is_empty() {
+        return Err(YadigError::NotFound(
+            "Persisted Bilibili session is missing SESSDATA".into(),
+        ));
+    }
+
+    Ok(BiliSession {
+        sessdata,
+        bili_jct: session.bili_jct.trim().to_string(),
+        dede_user_id: session.dede_user_id.trim().to_string(),
+        vip_status: session.vip_status,
+    })
 }
 
 /// Logout — clear session.
@@ -384,8 +418,11 @@ fn qr_poll_status_summary(data: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_url_param, qr_poll_status_summary, QrLoginStartResponse, SessionStatusResponse};
-    use crate::bili::auth::BiliSession;
+    use super::{
+        extract_url_param, qr_poll_status_summary, restore_persisted_session, QrLoginStartResponse,
+        SessionStatusResponse,
+    };
+    use crate::bili::auth::{BiliAuth, BiliSession};
     use serde_json::json;
 
     #[test]
@@ -444,6 +481,46 @@ mod tests {
         assert!(session.get("bili_jct").is_none());
         assert!(session.get("dede_user_id").is_none());
         assert!(session.get("vip_status").is_none());
+    }
+
+    #[test]
+    fn restores_persisted_session_into_auth_state() {
+        let auth = BiliAuth::new();
+        let session = BiliSession {
+            sessdata: " persisted_sess ".to_string(),
+            bili_jct: " persisted_csrf ".to_string(),
+            dede_user_id: " 42 ".to_string(),
+            vip_status: 1,
+        };
+
+        restore_persisted_session(&auth, session).expect("persisted session should restore");
+
+        assert_eq!(
+            auth.session(),
+            Some(BiliSession {
+                sessdata: "persisted_sess".to_string(),
+                bili_jct: "persisted_csrf".to_string(),
+                dede_user_id: "42".to_string(),
+                vip_status: 1,
+            })
+        );
+        assert!(auth.is_premium());
+    }
+
+    #[test]
+    fn rejects_persisted_session_without_sessdata() {
+        let auth = BiliAuth::new();
+        let session = BiliSession {
+            sessdata: "   ".to_string(),
+            bili_jct: "csrf".to_string(),
+            dede_user_id: "42".to_string(),
+            vip_status: 0,
+        };
+
+        let result = restore_persisted_session(&auth, session);
+
+        assert!(result.is_err());
+        assert!(auth.session().is_none());
     }
 
     #[test]

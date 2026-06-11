@@ -111,6 +111,7 @@ pub fn run() {
             commands::bilibili::bili_qr_login_start,
             commands::bilibili::bili_qr_login_poll,
             commands::bilibili::bili_cookie_login,
+            commands::bilibili::bili_restore_session,
             commands::bilibili::bili_password_login,
             commands::bilibili::bili_logout,
             commands::bilibili::bili_session_status,
