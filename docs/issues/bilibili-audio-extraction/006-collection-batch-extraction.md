@@ -26,7 +26,7 @@ Handle Bilibili collection URLs (合集/ugc_season). When the user pastes a coll
 - [ ] Each video's audio is extracted to a separate file in a collection-named subfolder
 - [ ] Progress is reported to frontend (current/total)
 - [ ] Cancel button stops extraction mid-way
-- [ ] Files named: `Downloads/yadig/{collection_title}/{episode_title}.m4a`
+- [x] Files named: `Downloads/yadig/{collection_title}/{episode_title}.m4a`
 - [x] `cargo check` passes
 
 ## Notes
@@ -34,6 +34,7 @@ Handle Bilibili collection URLs (合集/ugc_season). When the user pastes a coll
 - Collection URL parsing is covered by `src-tauri/src/bili/url.rs` tests and extraction routing calls `extract_collection` for `BiliUrl::Collection`.
 - Collection archive enumeration now paginates `/x/polymer/web-space/seasons_archives_list` using `page_num`/`page_size`, merging page archives until `meta.total` is reached or an empty page is returned.
 - Pagination URL construction, stop conditions, and page merging are covered by `src-tauri/src/bili/client.rs` unit tests.
+- Collection extraction now passes archive episode titles into the downloader, so files are created under the sanitized collection-title directory with sanitized episode-title filenames.
 - Progress events and cancellation remain open.
 
 ## Blocked by

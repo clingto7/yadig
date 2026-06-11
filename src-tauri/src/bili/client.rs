@@ -894,6 +894,29 @@ impl BiliClient {
         page_info: &Page,
         download_dir: &std::path::Path,
     ) -> Result<AudioSegment> {
+        let filename = if info.pages.len() > 1 {
+            make_download_filename(&info.title, Some(&page_info.part), "m4a")
+        } else {
+            make_download_filename(&info.title, None, "m4a")
+        };
+        self.download_page_audio_to_file(
+            info,
+            page_info,
+            download_dir,
+            filename,
+            page_info.part.clone(),
+        )
+        .await
+    }
+
+    async fn download_page_audio_to_file(
+        &self,
+        info: &VideoInfo,
+        page_info: &Page,
+        download_dir: &std::path::Path,
+        filename: String,
+        segment_title: String,
+    ) -> Result<AudioSegment> {
         let play_resp = self.playurl(info.aid, page_info.cid).await?;
         let dash = play_resp
             .dash
@@ -904,17 +927,12 @@ impl BiliClient {
         let best = select_best_audio(&dash.audio, has_session, is_premium)
             .ok_or_else(|| YadigError::NotFound("No audio streams available".into()))?;
 
-        let filename = if info.pages.len() > 1 {
-            make_download_filename(&info.title, Some(&page_info.part), "m4a")
-        } else {
-            make_download_filename(&info.title, None, "m4a")
-        };
         let filepath = download_dir.join(&filename);
 
         self.download_stream(&best.base_url, &filepath).await?;
 
         Ok(AudioSegment {
-            title: page_info.part.clone(),
+            title: segment_title,
             file_path: filepath.to_string_lossy().to_string(),
             duration: page_info.duration,
             quality: best.id,
@@ -994,7 +1012,13 @@ impl BiliClient {
                 .ok_or_else(|| YadigError::NotFound(format!("No pages in {}", archive.bvid)))?;
 
             match self
-                .download_page_audio(&info, page_info, &collection_dir)
+                .download_page_audio_to_file(
+                    &info,
+                    page_info,
+                    &collection_dir,
+                    make_collection_episode_filename(&archive.title),
+                    archive.title.clone(),
+                )
                 .await
             {
                 Ok(seg) => segments.push(seg),
@@ -1154,6 +1178,10 @@ fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String 
     } else {
         filename
     }
+}
+
+fn make_collection_episode_filename(title: &str) -> String {
+    make_download_filename(title, None, "m4a")
 }
 
 fn season_archives_page_url(mid: i64, season_id: i64, page_num: u32, page_size: u32) -> String {
@@ -1492,6 +1520,13 @@ mod tests {
         let part = sanitize_filename("Track 1/2");
         let filename = format!("{} - {}.m4a", title, part);
         assert_eq!(filename, "Album_ Vol. 1 - Track 1_2.m4a");
+    }
+
+    #[test]
+    fn collection_episode_filename_uses_episode_title_only() {
+        let filename = make_collection_episode_filename("Episode: 01/Intro");
+
+        assert_eq!(filename, "Episode_ 01_Intro.m4a");
     }
 
     #[test]
