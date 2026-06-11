@@ -26,7 +26,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 - [x] QR code expiration is handled with a "Refresh QR Code" button
 - [x] Account tier (premium/standard) is displayed
 - [ ] Error messages are user-friendly (not raw API errors)
-- [ ] `pnpm build` passes
+- [x] `pnpm build` passes
 
 ## Notes
 
@@ -34,6 +34,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 - Settings logout calls `bili_logout`, clears the persisted Bilibili session, and refreshes status.
 - QR login expiration now uses `src/lib/bili-login-ui.ts` state mapping and shows an explicit `Refresh QR Code` button.
 - Account tier is displayed from `bili_session_status` as Premium or standard max-quality copy.
+- Verified with `pnpm build`.
 
 ## Blocked by
 
