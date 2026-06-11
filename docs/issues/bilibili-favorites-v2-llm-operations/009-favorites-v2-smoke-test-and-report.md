@@ -12,7 +12,7 @@ The report should cover LLM configuration testing, LLM classification provenance
 
 ## Acceptance criteria
 
-- [ ] A manual smoke-test checklist exists before remote writes are executed.
+- [x] A manual smoke-test checklist exists before remote writes are executed.
 - [ ] Smoke test uses disposable folders and non-important public test videos only.
 - [ ] Smoke test verifies LLM provider connection without recording the API key.
 - [ ] Smoke test verifies LLM classification output or records a sanitized provider failure.
@@ -23,8 +23,13 @@ The report should cover LLM configuration testing, LLM classification provenance
 - [ ] Smoke test deletes a non-empty disposable folder with test videos and confirms remote state.
 - [ ] Smoke test verifies operation history for copy and folder operations.
 - [ ] Smoke test verifies raw Bilibili cookies, CSRF tokens, callback URLs, account identifiers, and LLM API keys do not appear in UI messages, operation history, logs, or report text.
-- [ ] Final report is written under `docs/research/` and links back to the PRD and issue directory.
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml`, `pnpm exec tsc --noEmit --project tsconfig.app.json --pretty false`, and `pnpm build` pass on the final implementation.
+- [x] Final report is written under `docs/research/` and links back to the PRD and issue directory.
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml`, `pnpm exec tsc --noEmit --project tsconfig.app.json --pretty false`, and `pnpm build` pass on the final implementation.
+
+## Notes
+
+- Pre-flight checklist and local verification report: `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
+- Real remote Bilibili write checks remain unchecked until they are executed with disposable folders and test videos.
 
 ## Blocked by
 

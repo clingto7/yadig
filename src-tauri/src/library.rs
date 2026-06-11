@@ -268,7 +268,7 @@ impl OperationPlan {
                     target_collection_title: request.target_collection_title.clone(),
                     resource_id: candidate.resource_id,
                     resource_type: candidate.resource_type,
-                    metadata: serde_json::json!({}),
+                    metadata: candidate.metadata,
                 }
             })
             .collect();
@@ -513,6 +513,8 @@ pub struct FavoriteOperationCandidate {
     pub collection_external_ids: Vec<String>,
     pub resource_id: Option<String>,
     pub resource_type: Option<String>,
+    #[serde(default = "empty_metadata")]
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -645,6 +647,7 @@ mod favorite_operation_plan_tests {
             collection_external_ids: vec!["100".to_string()],
             resource_id: Some("987654321".to_string()),
             resource_type: Some("2".to_string()),
+            metadata: serde_json::json!({}),
         }
     }
 
@@ -688,6 +691,37 @@ mod favorite_operation_plan_tests {
         assert_eq!(item.error, None);
         assert_eq!(item.source_collection_external_id.as_deref(), Some("100"));
         assert_eq!(item.target_collection_external_id.as_deref(), Some("200"));
+    }
+
+    #[test]
+    fn preserves_non_sensitive_classification_metadata_on_favorite_plan_items() {
+        let mut classified = candidate();
+        classified.metadata = serde_json::json!({
+            "classificationDraft": {
+                "category": "music",
+                "confidence": 0.92,
+                "provenance": "llm",
+                "suggestedAction": "copy",
+                "suggestedTarget": "Samples",
+                "selectedAction": "copy"
+            }
+        });
+
+        let plan = OperationPlan::for_bili_favorite_operation(FavoriteOperationPlanRequest {
+            action: FavoriteOperationAction::Copy,
+            target_collection_external_id: Some("200".to_string()),
+            target_collection_title: Some("Samples".to_string()),
+            items: vec![classified],
+        });
+
+        assert_eq!(
+            plan.items[0].metadata["classificationDraft"]["category"].as_str(),
+            Some("music")
+        );
+        assert_eq!(
+            plan.items[0].metadata["classificationDraft"]["selectedAction"].as_str(),
+            Some("copy")
+        );
     }
 
     #[test]

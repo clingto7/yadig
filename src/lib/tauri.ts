@@ -183,6 +183,7 @@ export interface FavoriteOperationCandidate {
   collectionExternalIds: string[];
   resourceId: string | null;
   resourceType: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface FavoriteOperationPlanRequest {

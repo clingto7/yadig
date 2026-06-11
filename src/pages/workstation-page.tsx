@@ -17,10 +17,19 @@ import {
   uniqueSuggestedTargets,
   type ClassificationReviewFilters,
 } from "@/lib/classification-review";
+import {
+  attachClassificationDraftMetadata,
+  buildClassificationDraftRows,
+  groupClassificationDraftRows,
+  matchFavoriteFolderBySuggestion,
+  selectClassificationDraftRows,
+  type ClassificationDraftMode,
+} from "@/lib/classification-draft-prefill";
 import { CHECKBOX_CLASS_NAME } from "@/lib/ui-style";
 import {
   tauri,
   type FavoriteFolderPrivacy,
+  type FavoriteOperationCandidate,
   type FavoriteOperationAction,
   type LibraryCollection,
   type LibraryItem,
@@ -162,6 +171,44 @@ function metadataStringArray(value: unknown): string[] {
     : [];
 }
 
+type ClassificationDraftPlanMetadata = {
+  category: string;
+  confidence: number | null;
+  provenance: string;
+  suggestedAction: string | null;
+  suggestedTarget: string | null;
+  selectedAction: string | null;
+};
+
+function classificationDraftMetadata(item: Pick<OperationPlanItem, "metadata">): ClassificationDraftPlanMetadata | null {
+  const draft = item.metadata.classificationDraft;
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) return null;
+
+  const record = draft as Record<string, unknown>;
+  const category = metadataString(record.category);
+  if (!category) return null;
+
+  return {
+    category,
+    confidence: metadataNumber(record.confidence),
+    provenance: metadataString(record.provenance) ?? "classification",
+    suggestedAction: metadataString(record.suggestedAction),
+    suggestedTarget: metadataString(record.suggestedTarget),
+    selectedAction: metadataString(record.selectedAction),
+  };
+}
+
+function classificationDraftMetadataLabel(metadata: ClassificationDraftPlanMetadata): string {
+  return [
+    `Classification ${metadata.category}`,
+    metadata.confidence === null ? null : `${Math.round(metadata.confidence * 100)}%`,
+    metadata.provenance,
+    metadata.suggestedAction
+      ? `suggested ${metadata.suggestedAction}${metadata.suggestedTarget ? ` -> ${metadata.suggestedTarget}` : ""}`
+      : null,
+  ].filter(Boolean).join(" · ");
+}
+
 function folderDeleteKnownCount(item: Pick<OperationPlanItem, "metadata">): number {
   return Math.max(0, Math.trunc(metadataNumber(item.metadata.knownItemCount) ?? 0));
 }
@@ -257,6 +304,9 @@ export function WorkstationPage() {
   const [reviewFilters, setReviewFilters] = useState<ClassificationReviewFilters>(
     DEFAULT_CLASSIFICATION_REVIEW_FILTERS
   );
+  const [classificationDraftMode, setClassificationDraftMode] = useState<ClassificationDraftMode>("suggested");
+  const [classificationDraftSuggestedAction, setClassificationDraftSuggestedAction] =
+    useState<FavoriteOperationAction>("copy");
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [classificationProgress, setClassificationProgress] = useState<ClassificationProgress | null>(null);
@@ -367,6 +417,39 @@ export function WorkstationPage() {
     () => uniqueBiliCategories(items.filter((item) => item.itemType === "bili_favorite_video")),
     [items]
   );
+
+  const classificationDraftRows = useMemo(
+    () => buildClassificationDraftRows(visibleItems, classifications, selectedFavoriteIds),
+    [classifications, selectedFavoriteIds, visibleItems]
+  );
+
+  const classificationDraftGroups = useMemo(
+    () => groupClassificationDraftRows(classificationDraftRows),
+    [classificationDraftRows]
+  );
+
+  const classificationDraftAction: FavoriteOperationAction =
+    classificationDraftMode === "suggested"
+      ? classificationDraftSuggestedAction
+      : classificationDraftMode;
+
+  const selectedClassificationDraftRows = useMemo(
+    () => selectClassificationDraftRows(classificationDraftRows, {
+      mode: classificationDraftMode,
+      suggestedAction: classificationDraftSuggestedAction,
+    }),
+    [classificationDraftMode, classificationDraftRows, classificationDraftSuggestedAction]
+  );
+
+  const matchedClassificationDraftTargets = useMemo(() => {
+    const targets = Array.from(
+      new Set(selectedClassificationDraftRows.map((row) => row.suggestedTarget ?? "").filter(Boolean))
+    );
+    return targets.map((targetName) => ({
+      targetName,
+      folder: matchFavoriteFolderBySuggestion(favoriteFolders, targetName),
+    }));
+  }, [favoriteFolders, selectedClassificationDraftRows]);
 
   const planStatusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -708,6 +791,65 @@ export function WorkstationPage() {
       setMessage(`Created ${action} draft plan with ${pendingCount}/${nextPlan.items.length} executable items.`);
     } catch (err) {
       setMessage(safeErrorMessage("Favorite plan creation failed", err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createFavoritePlanFromClassificationDraft() {
+    if (!favoritePlanContextReady) {
+      setMessage("Choose a specific favorite folder before creating a classification draft.");
+      return;
+    }
+    if (classificationDraftRows.length === 0) {
+      setMessage("Select favorite videos with classification results before creating a classification draft.");
+      return;
+    }
+    if (selectedClassificationDraftRows.length === 0) {
+      setMessage(`No selected classification results match ${classificationDraftAction}.`);
+      return;
+    }
+    if ((classificationDraftAction === "copy" || classificationDraftAction === "move") && !targetFolder) {
+      setMessage(`Choose a reviewed target favorite folder before creating a ${classificationDraftAction} draft.`);
+      return;
+    }
+
+    setBusy("classification-draft-plan");
+    setMessage(null);
+    try {
+      const selectedRowIds = new Set(selectedClassificationDraftRows.map((row) => row.externalId));
+      const candidates: FavoriteOperationCandidate[] = attachClassificationDraftMetadata(
+        (await listFavoriteOperationCandidates(selectedFolderId))
+          .filter((candidate) => selectedRowIds.has(candidate.externalId)),
+        selectedClassificationDraftRows,
+        classificationDraftAction
+      );
+      if (candidates.length === 0) {
+        setMessage("No matching favorite membership candidates were found for the selected classification results.");
+        return;
+      }
+
+      const nextPlan = await tauri.createBiliFavoriteOperationPlan({
+        action: classificationDraftAction,
+        targetCollectionExternalId:
+          classificationDraftAction === "copy" || classificationDraftAction === "move"
+            ? targetFolder?.externalId ?? null
+            : null,
+        targetCollectionTitle:
+          classificationDraftAction === "copy" || classificationDraftAction === "move"
+            ? targetFolder?.title ?? null
+            : null,
+        items: candidates,
+      });
+      const savedPlanId = await saveOperationPlan(nextPlan);
+      await refreshOperationHistory(savedPlanId);
+      setPlan(nextPlan);
+      const pendingCount = nextPlan.items.filter((item) => item.status === "pending").length;
+      setMessage(
+        `Created ${classificationDraftAction} draft from classification suggestions with ${pendingCount}/${nextPlan.items.length} executable items.`
+      );
+    } catch (err) {
+      setMessage(safeErrorMessage("Classification draft creation failed", err));
     } finally {
       setBusy(null);
     }
@@ -1382,6 +1524,174 @@ export function WorkstationPage() {
                     {selectedFavoriteIds.size} selected in {selectedFolder?.title ?? "favorite folder"}.
                   </p>
                 )}
+                {plan && plan.kind !== "bili_batch_audio_extraction" && (
+                  <div className="rounded border border-border bg-secondary/30 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">
+                          Current draft: {favoritePlanKindLabel(plan.kind)}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                          {OPERATION_ITEM_STATUSES.filter((status) => (planStatusCounts.get(status) ?? 0) > 0).map((status) => (
+                            <span key={status} className="rounded bg-secondary px-2 py-0.5">
+                              {operationPlanItemStatusLabel(status)} {planStatusCounts.get(status) ?? 0}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                      {plan.kind === "bili_batch_move" && (
+                        <button
+                          onClick={() => void executeFavoriteMovePlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          <FolderInput className="h-4 w-4" />
+                          Execute Move
+                        </button>
+                      )}
+                      {plan.kind === "bili_batch_copy" && (
+                        <button
+                          onClick={() => void executeFavoriteCopyPlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          <CopyIcon className="h-4 w-4" />
+                          Execute Copy
+                        </button>
+                      )}
+                      {plan.kind === "bili_batch_delete" && (
+                        <button
+                          onClick={() => void executeFavoriteDeletePlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-destructive px-3 font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Execute Delete
+                        </button>
+                      )}
+                      {plan.kind === "bili_favorite_folder_create" && (
+                        <button
+                          onClick={() => void executeFavoriteFolderCreatePlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          <FolderPlus className="h-4 w-4" />
+                          Execute Create Folder
+                        </button>
+                      )}
+                      {plan.kind === "bili_favorite_folder_rename" && (
+                        <button
+                          onClick={() => void executeFavoriteFolderRenamePlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          <FolderPen className="h-4 w-4" />
+                          Execute Rename Folder
+                        </button>
+                      )}
+                      {plan.kind === "bili_favorite_folder_delete" && (
+                        <button
+                          onClick={() => void executeFavoriteFolderDeletePlan()}
+                          disabled={busy !== null || (planStatusCounts.get("pending") ?? 0) === 0}
+                          className="inline-flex h-9 items-center gap-2 rounded-md bg-destructive px-3 font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Execute Delete Folder
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="grid gap-2 border-t border-border pt-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-medium text-foreground">Classification Draft Prefill</h4>
+                    <span className="text-xs text-muted-foreground">
+                      {selectedClassificationDraftRows.length}/{classificationDraftRows.length} selected
+                    </span>
+                  </div>
+                  {classificationDraftGroups.length > 0 ? (
+                    <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+                      {classificationDraftGroups.map((group) => (
+                        <span key={group.action} className="rounded bg-secondary px-2 py-0.5">
+                          {operationActionLabel(group.action)} {group.count}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded border border-dashed border-border p-2 text-xs text-muted-foreground">
+                      No selected classification results.
+                    </div>
+                  )}
+                  <label className="block text-sm text-muted-foreground">
+                    Action source
+                    <select
+                      value={classificationDraftMode}
+                      onChange={(event) => setClassificationDraftMode(event.target.value as ClassificationDraftMode)}
+                      disabled={classificationDraftRows.length === 0}
+                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                    >
+                      <option value="suggested">Use suggested action</option>
+                      <option value="copy">Force copy</option>
+                      <option value="move">Force move</option>
+                      <option value="delete">Force delete</option>
+                    </select>
+                  </label>
+                  {classificationDraftMode === "suggested" && (
+                    <label className="block text-sm text-muted-foreground">
+                      Suggested action
+                      <select
+                        value={classificationDraftSuggestedAction}
+                        onChange={(event) => setClassificationDraftSuggestedAction(event.target.value as FavoriteOperationAction)}
+                        disabled={classificationDraftRows.length === 0}
+                        className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                      >
+                        <option value="copy">Copy</option>
+                        <option value="move">Move</option>
+                        <option value="delete">Delete</option>
+                      </select>
+                    </label>
+                  )}
+                  {(classificationDraftAction === "copy" || classificationDraftAction === "move")
+                    && matchedClassificationDraftTargets.length > 0 && (
+                    <div className="space-y-1 rounded border border-border p-2 text-xs text-muted-foreground">
+                      {matchedClassificationDraftTargets.map(({ targetName, folder }) => (
+                        <div key={targetName} className="flex flex-wrap items-center gap-2">
+                          <span className="min-w-0 flex-1 break-words">{targetName}</span>
+                          {folder ? (
+                            <button
+                              onClick={() => setTargetFolderId(folder.externalId)}
+                              className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs text-foreground hover:bg-secondary"
+                            >
+                              Use {folder.title}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setFolderCreateTitle(targetName)}
+                              className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs text-foreground hover:bg-secondary"
+                            >
+                              Fill New Folder Title
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => void createFavoritePlanFromClassificationDraft()}
+                    disabled={
+                      busy !== null
+                      || !favoritePlanContextReady
+                      || selectedClassificationDraftRows.length === 0
+                      || ((classificationDraftAction === "copy" || classificationDraftAction === "move") && !targetFolder)
+                    }
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
+                  >
+                    <Tags className="h-4 w-4" />
+                    Create Classification Draft
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1445,6 +1755,7 @@ export function WorkstationPage() {
                       {selectedHistoryPlan.items.map((item: OperationPlanHistoryItem) => {
                         const issueKind = classifyOperationIssue(item);
                         const safeError = sanitizeOperationError(item.error);
+                        const draftMetadata = classificationDraftMetadata(item);
                         return (
                           <div key={item.id} className="rounded border border-border p-2 text-sm">
                             <div className="font-medium">{item.title}</div>
@@ -1456,6 +1767,11 @@ export function WorkstationPage() {
                             {item.action === "delete_folder" && folderDeleteKnownTitles(item).length > 0 && (
                               <div className="mt-1 max-h-20 overflow-y-auto break-words text-xs text-muted-foreground">
                                 {folderDeleteKnownTitles(item).join(" / ")}
+                              </div>
+                            )}
+                            {draftMetadata && (
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {classificationDraftMetadataLabel(draftMetadata)}
                               </div>
                             )}
                             {issueKind !== "none" && (
@@ -1489,24 +1805,32 @@ export function WorkstationPage() {
                   ))}
                 </div>
                 <div className="mt-3 max-h-64 space-y-2 overflow-y-auto text-sm">
-                  {plan.items.map((item) => (
-                    <div key={`${item.externalId}:${item.sourceCollectionExternalId ?? ""}`} className="rounded border border-border p-2">
-                      <div className="font-medium">{item.title}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {operationActionLabel(item.action)}
-                        {" · "}
-                        {operationItemDetail(item)}
-                      </div>
-                      {item.action === "delete_folder" && folderDeleteKnownTitles(item).length > 0 && (
-                        <div className="mt-1 max-h-24 overflow-y-auto break-words text-xs text-muted-foreground">
-                          {folderDeleteKnownTitles(item).join(" / ")}
+                  {plan.items.map((item) => {
+                    const draftMetadata = classificationDraftMetadata(item);
+                    return (
+                      <div key={`${item.externalId}:${item.sourceCollectionExternalId ?? ""}`} className="rounded border border-border p-2">
+                        <div className="font-medium">{item.title}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {operationActionLabel(item.action)}
+                          {" · "}
+                          {operationItemDetail(item)}
                         </div>
-                      )}
-                      {item.error && (
-                        <div className="mt-1 text-xs text-destructive">{sanitizeOperationError(item.error)}</div>
-                      )}
-                    </div>
-                  ))}
+                        {item.action === "delete_folder" && folderDeleteKnownTitles(item).length > 0 && (
+                          <div className="mt-1 max-h-24 overflow-y-auto break-words text-xs text-muted-foreground">
+                            {folderDeleteKnownTitles(item).join(" / ")}
+                          </div>
+                        )}
+                        {draftMetadata && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {classificationDraftMetadataLabel(draftMetadata)}
+                          </div>
+                        )}
+                        {item.error && (
+                          <div className="mt-1 text-xs text-destructive">{sanitizeOperationError(item.error)}</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 {plan.kind === "bili_batch_move" && (
                   <button

@@ -55,14 +55,18 @@ body {
 
 .yadig-checkbox {
   appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
   display: inline-grid;
   place-content: center;
   width: 1rem;
   height: 1rem;
+  min-width: 1rem;
   flex: 0 0 auto;
-  border: 1px solid var(--color-input);
+  color: var(--color-primary);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  background: var(--color-background);
+  background-color: var(--color-card);
   cursor: pointer;
   transition:
     background-color 120ms ease,
@@ -83,7 +87,7 @@ body {
 
 .yadig-checkbox:checked {
   border-color: var(--color-primary);
-  background: var(--color-primary);
+  background-color: var(--color-primary);
 }
 
 .yadig-checkbox:checked::before {
