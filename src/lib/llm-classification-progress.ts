@@ -19,6 +19,11 @@ export interface ClassificationProgress {
   savedItems: number;
   failedChunks: number;
   currentChunkItemCount?: number;
+  provider?: string | null;
+  model?: string | null;
+  requestStartedAt?: number | null;
+  elapsedSeconds?: number;
+  currentChunkSampleTitles?: string[];
   latestError?: string | null;
 }
 
@@ -40,7 +45,10 @@ export function chunkClassificationItems<T extends LibraryItem>(
 export function buildClassificationProgress(
   progress: ClassificationProgress
 ): ClassificationProgress {
-  return progress;
+  return {
+    ...progress,
+    elapsedSeconds: Math.max(0, Math.floor(progress.elapsedSeconds ?? 0)),
+  };
 }
 
 export function formatClassificationProgress(progress: ClassificationProgress): string {
@@ -53,18 +61,23 @@ export function formatClassificationProgress(progress: ClassificationProgress): 
   const failureLabel = progress.failedChunks > 0
     ? `, ${progress.failedChunks} failed chunk${progress.failedChunks === 1 ? "" : "s"}`
     : "";
+  const providerLabel = [progress.provider, progress.model].filter(Boolean).join(" / ");
+  const providerSuffix = providerLabel ? ` via ${providerLabel}` : "";
+  const elapsedLabel = progress.elapsedSeconds !== undefined && progress.elapsedSeconds > 0
+    ? `, waiting ${progress.elapsedSeconds}s`
+    : "";
 
   switch (progress.stage) {
     case "preparing":
-      return `${source} classification preparing ${progress.totalItems} item${progress.totalItems === 1 ? "" : "s"}.`;
+      return `${source} classification preparing ${progress.totalItems} item${progress.totalItems === 1 ? "" : "s"}${providerSuffix}.`;
     case "requesting":
-      return `${source} classification requesting ${chunkLabel} (${progress.currentChunkItemCount ?? 0} items); ${itemLabel}, ${savedLabel}${failureLabel}.`;
+      return `${source} classification requesting ${chunkLabel} (${progress.currentChunkItemCount ?? 0} items${elapsedLabel})${providerSuffix}; ${itemLabel}, ${savedLabel}${failureLabel}.`;
     case "saving":
-      return `${source} classification saving ${chunkLabel}; ${itemLabel}, ${savedLabel}${failureLabel}.`;
+      return `${source} classification saving ${chunkLabel}${providerSuffix}; ${itemLabel}, ${savedLabel}${failureLabel}.`;
     case "completed":
-      return `${source} classification completed; ${itemLabel}, ${savedLabel}${failureLabel}.`;
+      return `${source} classification completed${providerSuffix}; ${itemLabel}, ${savedLabel}${failureLabel}.`;
     case "failed":
-      return `${source} classification failed at ${chunkLabel}; ${itemLabel}, ${savedLabel}${failureLabel}${
+      return `${source} classification failed at ${chunkLabel}${providerSuffix}; ${itemLabel}, ${savedLabel}${failureLabel}${
         progress.latestError ? `: ${progress.latestError}` : "."
       }`;
   }

@@ -149,6 +149,14 @@ function confidencePercentToRatio(value: string): number {
   return Math.max(0, Math.min(100, parsed)) / 100;
 }
 
+function elapsedSecondsSince(startedAt: number) {
+  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+}
+
+function currentChunkSampleTitles(items: LibraryItem[]) {
+  return items.slice(0, 3).map((item) => item.title);
+}
+
 export function WorkstationPage() {
   const [items, setItems] = useState<LibraryItemWithCollections[]>([]);
   const [favoriteFolders, setFavoriteFolders] = useState<LibraryCollection[]>([]);
@@ -170,6 +178,26 @@ export function WorkstationPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [classificationProgress, setClassificationProgress] = useState<ClassificationProgress | null>(null);
+
+  useEffect(() => {
+    if (classificationProgress?.stage !== "requesting" || !classificationProgress.requestStartedAt) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setClassificationProgress((current) => {
+        if (current?.stage !== "requesting" || !current.requestStartedAt) {
+          return current;
+        }
+        return buildClassificationProgress({
+          ...current,
+          elapsedSeconds: elapsedSecondsSince(current.requestStartedAt),
+        });
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [classificationProgress?.requestStartedAt, classificationProgress?.stage]);
 
   const analysisById = useMemo(() => {
     return new Map(classifications.map((analysis) => [analysis.externalId, analysis]));
@@ -366,6 +394,12 @@ export function WorkstationPage() {
       const provider = mode === "llm"
         ? await loadLlmProvider()
         : null;
+      const providerProgress = mode === "llm"
+        ? {
+            provider: provider?.provider ?? DEFAULT_LLM_PROVIDER,
+            model: provider?.model ?? DEFAULT_LLM_MODEL,
+          }
+        : {};
 
       let processedItems = 0;
       let savedItems = 0;
@@ -374,6 +408,7 @@ export function WorkstationPage() {
 
       for (const [chunkIndex, chunkItems] of chunks.entries()) {
         const currentChunk = chunkIndex + 1;
+        const requestStartedAt = Date.now();
         setClassificationProgress(buildClassificationProgress({
           mode,
           stage: "requesting",
@@ -384,6 +419,10 @@ export function WorkstationPage() {
           savedItems,
           failedChunks,
           currentChunkItemCount: chunkItems.length,
+          currentChunkSampleTitles: currentChunkSampleTitles(chunkItems),
+          requestStartedAt,
+          elapsedSeconds: 0,
+          ...providerProgress,
           latestError: null,
         }));
 
@@ -407,6 +446,10 @@ export function WorkstationPage() {
           savedItems,
           failedChunks,
           currentChunkItemCount: chunkItems.length,
+          currentChunkSampleTitles: currentChunkSampleTitles(chunkItems),
+          requestStartedAt,
+          elapsedSeconds: elapsedSecondsSince(requestStartedAt),
+          ...providerProgress,
           latestError: firstFailure,
         }));
 
@@ -431,6 +474,7 @@ export function WorkstationPage() {
         totalItems: classificationItems.length,
         savedItems,
         failedChunks,
+        ...providerProgress,
         latestError: firstFailure,
       }));
       setMessage(
@@ -847,6 +891,30 @@ export function WorkstationPage() {
                       }}
                     />
                   </div>
+                  <div className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
+                    <span>Stage: {classificationProgress.stage}</span>
+                    <span>
+                      Chunk: {classificationProgress.currentChunk}/{classificationProgress.totalChunks}
+                    </span>
+                    {classificationProgress.stage === "requesting" && (
+                      <span>Waiting: {classificationProgress.elapsedSeconds ?? 0}s</span>
+                    )}
+                    {(classificationProgress.provider || classificationProgress.model) && (
+                      <span>
+                        Provider: {[classificationProgress.provider, classificationProgress.model].filter(Boolean).join(" / ")}
+                      </span>
+                    )}
+                  </div>
+                  {classificationProgress.currentChunkSampleTitles?.length ? (
+                    <div className="mt-2 break-words text-xs">
+                      Current chunk: {classificationProgress.currentChunkSampleTitles.join(" / ")}
+                    </div>
+                  ) : null}
+                  {classificationProgress.latestError ? (
+                    <div className="mt-2 break-words text-xs text-destructive">
+                      Latest error: {classificationProgress.latestError}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

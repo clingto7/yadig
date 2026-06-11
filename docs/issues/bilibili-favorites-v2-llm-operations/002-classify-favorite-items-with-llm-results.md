@@ -14,17 +14,17 @@ If an LLM chunk fails, the failure remains visible and successful chunks remain 
 
 ## Acceptance criteria
 
-- [ ] Workstation can run explicit LLM classification for a selected favorite folder or selected favorite items.
-- [ ] Favorite item payloads include only classification metadata, not Bilibili cookies, CSRF tokens, LLM API keys, callback URLs, or account identifiers.
-- [ ] Requests are chunked with a conservative fixed chunk size for the first version.
-- [ ] Each valid result persists item id, category, tags, reason, confidence, suggested action, suggested target folder, provenance, provider/model, and analysis timestamp.
-- [ ] Result validation rejects or normalizes unknown item ids, duplicate results, invalid confidence values, unsupported actions, malformed target suggestions, and malformed JSON.
-- [ ] Partial chunk success is saved; failed chunks are reported with sanitized errors.
-- [ ] Explicit local metadata classification remains available and stores provenance as local metadata, not LLM.
-- [ ] The Workstation displays classification provenance so users can tell LLM output from local metadata output.
-- [ ] Rust tests cover parsing, validation, chunk handling, strict LLM failure semantics, and local metadata provenance.
-- [ ] Database/filtering helper tests or contract checks cover persistence of category, confidence, suggested action, target suggestion, and timestamp.
-- [ ] TypeScript compilation and Rust tests pass.
+- [x] Workstation can run explicit LLM classification for a selected favorite folder or selected favorite items.
+- [x] Favorite item payloads include only classification metadata, not Bilibili cookies, CSRF tokens, LLM API keys, callback URLs, or account identifiers.
+- [x] Requests are chunked with a conservative fixed chunk size for the first version.
+- [x] Each valid result persists item id, category, tags, reason, confidence, suggested action, suggested target folder, provenance, provider/model, and analysis timestamp.
+- [x] Result validation rejects or normalizes unknown item ids, duplicate results, invalid confidence values, unsupported actions, malformed target suggestions, and malformed JSON.
+- [x] Partial chunk success is saved; failed chunks are reported with sanitized errors.
+- [x] Explicit local metadata classification remains available and stores provenance as local metadata, not LLM.
+- [x] The Workstation displays classification provenance so users can tell LLM output from local metadata output.
+- [x] Rust tests cover parsing, validation, chunk handling, strict LLM failure semantics, and local metadata provenance.
+- [x] Database/filtering helper tests or contract checks cover persistence of category, confidence, suggested action, target suggestion, and timestamp.
+- [x] TypeScript compilation and Rust tests pass.
 
 ## Blocked by
 

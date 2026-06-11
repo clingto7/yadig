@@ -3,8 +3,10 @@ use crate::library::{LibraryItem, LibraryItemType};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::time::Duration;
 
 pub const LLM_CLASSIFICATION_CHUNK_SIZE: usize = 8;
+const LLM_REQUEST_TIMEOUT_SECONDS: u64 = 90;
 const SUPPORTED_CLASSIFICATION_ACTIONS: [&str; 4] = ["copy", "move", "delete", "none"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,6 +701,22 @@ pub fn is_response_format_compatibility_error(status: u16, body: &str) -> bool {
     lower.contains("response_format") || lower.contains("json_object")
 }
 
+pub fn should_retry_without_response_format(status: u16, body: &str) -> bool {
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    is_response_format_compatibility_error(status, body)
+        || lower.contains("bad request")
+        || lower.contains("unsupported")
+        || lower.contains("invalid")
+        || lower.trim().is_empty()
+}
+
+fn llm_request_timeout() -> Duration {
+    Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS)
+}
+
 pub fn llm_provider_http_error(status: u16, body: &str) -> LlmProviderTestError {
     if is_response_format_compatibility_error(status, body) {
         return LlmProviderTestError::new(
@@ -781,6 +799,7 @@ async fn call_llm_provider_test(
         .post(&url)
         .bearer_auth(api_key)
         .json(&payload)
+        .timeout(llm_request_timeout())
         .send()
         .await
         .map_err(|err| {
@@ -800,6 +819,14 @@ async fn call_llm_provider_test(
     })?;
 
     if !status.is_success() {
+        if include_response_format
+            && should_retry_without_response_format(status_code, &body_text)
+        {
+            return Err(LlmProviderTestError::new(
+                LlmProviderTestErrorKind::IncompatibleResponse,
+                format!("response_format request was rejected with status {status_code}: {body_text}"),
+            ));
+        }
         return Err(llm_provider_http_error(status_code, &body_text));
     }
 
@@ -838,6 +865,7 @@ async fn call_openai_compatible(
         .post(&url)
         .bearer_auth(api_key)
         .json(&payload)
+        .timeout(llm_request_timeout())
         .send()
         .await
         .map_err(|e| YadigError::Network(format!("LLM request failed: {}", e)))?;
@@ -898,13 +926,20 @@ async fn call_openai_compatible_classification_once(
         .post(&url)
         .bearer_auth(api_key)
         .json(&payload)
+        .timeout(llm_request_timeout())
         .send()
         .await
         .map_err(|err| YadigError::Network(format!("LLM classification request failed: {err}")))?;
 
     if !response.status().is_success() {
         let status = response.status();
+        let status_code = status.as_u16();
         let body = response.text().await.unwrap_or_default();
+        if include_response_format && should_retry_without_response_format(status_code, &body) {
+            return Err(YadigError::Network(redact_llm_error(&format!(
+                "LLM classification response_format request failed with status {status}: {body}"
+            ))));
+        }
         return Err(YadigError::Network(redact_llm_error(&format!(
             "LLM classification request failed with status {status}: {body}"
         ))));
@@ -1333,8 +1368,19 @@ mod tests {
         let model_body = "{\"error\":{\"message\":\"model is unsupported\"}}";
 
         assert!(is_response_format_compatibility_error(400, body));
+        assert!(should_retry_without_response_format(
+            400,
+            "{\"error\":{\"message\":\"bad request\"}}"
+        ));
+        assert!(should_retry_without_response_format(422, ""));
         assert!(!is_response_format_compatibility_error(401, body));
         assert!(!is_response_format_compatibility_error(400, model_body));
+        assert!(should_retry_without_response_format(400, model_body));
+    }
+
+    #[test]
+    fn llm_requests_have_a_bounded_timeout() {
+        assert_eq!(llm_request_timeout().as_secs(), 90);
     }
 
     #[test]

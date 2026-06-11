@@ -27,6 +27,11 @@ const progress = buildClassificationProgress({
   totalItems: items.length,
   savedItems: chunks[0]?.length ?? 0,
   failedChunks: 0,
+  currentChunkItemCount: chunks[1]?.length ?? 0,
+  provider: "openai-compatible",
+  model: "mimo-v2.5-pro",
+  elapsedSeconds: 12,
+  currentChunkSampleTitles: chunks[1]?.slice(0, 3).map((item) => item.title) ?? [],
 });
 
 export const llmClassificationProgressContract = {
