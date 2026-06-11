@@ -1,7 +1,7 @@
 use crate::bili::auth::{BiliAuth, BiliSession};
 use crate::bili::client::BiliClient;
 use crate::bili::extractor::ExtractionResult;
-use crate::bili::session::parse_cookie_session;
+use crate::bili::session::login_session_from_cookie_input;
 use crate::error::{Result, YadigError};
 use tauri::State;
 
@@ -119,20 +119,7 @@ pub async fn bili_qr_login_poll(
 /// Login with Bilibili cookie (SESSDATA).
 #[tauri::command]
 pub async fn bili_cookie_login(auth: State<'_, BiliAuth>, sessdata: String) -> Result<BiliSession> {
-    let cookie = sessdata.trim();
-    if cookie.is_empty() {
-        return Err(YadigError::NotFound("SESSDATA cannot be empty".into()));
-    }
-    let session = if let Some(session) = parse_cookie_session(cookie) {
-        normalize_persisted_session(session)?
-    } else {
-        BiliSession {
-            sessdata: cookie.to_string(),
-            bili_jct: String::new(),
-            dede_user_id: String::new(),
-            vip_status: 0,
-        }
-    };
+    let session = login_session_from_cookie_input(&sessdata).map_err(YadigError::NotFound)?;
     auth.set_session(session.clone());
     Ok(session)
 }

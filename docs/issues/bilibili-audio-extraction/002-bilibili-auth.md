@@ -26,7 +26,7 @@ Implement Bilibili authentication with two login methods, session persistence, a
 ## Acceptance criteria
 
 - [ ] QR login flow works end-to-end: generate QR → user scans → poll → session saved
-- [ ] Cookie login works: paste SESSDATA → session saved
+- [x] Cookie login works: paste SESSDATA → session saved
 - [x] Session persists across app restarts (loaded from tauri-plugin-store)
 - [x] `bili_session_status` returns correct login state after restart
 - [x] `bili_logout` clears both in-memory and persisted session
@@ -38,6 +38,7 @@ Implement Bilibili authentication with two login methods, session persistence, a
 - Frontend persistence uses the documented `bilibili_session` Tauri Store key and migrates the earlier `bili_session` key.
 - Startup restore is implemented in `src/App.tsx` through `bili_restore_session`, followed by `bili_session_status`.
 - Logout clears Rust auth state through `bili_logout` and deletes both current and legacy persisted session keys.
+- Cookie login accepts either a raw SESSDATA value or a full browser Cookie header; full Cookie input preserves `bili_jct` and `DedeUserID` for write-capable sessions.
 - Backend command registration is covered by `cargo check --manifest-path src-tauri/Cargo.toml`.
 
 ## Blocked by

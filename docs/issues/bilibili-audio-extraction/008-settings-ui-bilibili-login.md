@@ -20,7 +20,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 ## Acceptance criteria
 
 - [ ] QR login flow works: scan → confirm → settings shows "Logged in as {username}"
-- [ ] Cookie login flow works: paste SESSDATA → settings shows logged in
+- [x] Cookie login flow works: paste SESSDATA → settings shows logged in
 - [x] Login persists across app restart
 - [x] Logout clears session and UI updates
 - [x] QR code expiration is handled with a "Refresh QR Code" button
@@ -32,6 +32,7 @@ Add a Bilibili login section to the settings page, following the existing Discog
 
 - Session persistence is implemented through `src/lib/bili-session-store.ts` and restored in `src/App.tsx` through `bili_restore_session`.
 - Settings logout calls `bili_logout`, clears the persisted Bilibili session, and refreshes status.
+- Cookie login calls `bili_cookie_login`, saves the returned session to Tauri Store, hides the Cookie form, and refreshes login status.
 - QR login expiration now uses `src/lib/bili-login-ui.ts` state mapping and shows an explicit `Refresh QR Code` button.
 - Account tier is displayed from `bili_session_status` as Premium or standard max-quality copy.
 - Verified with `pnpm build`.
