@@ -34,6 +34,7 @@ Successful deletion should remove the local collection and memberships while pre
 - Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
 - The 2026-06-11 smoke test deleted empty disposable folder `ydg3a0611` and non-empty disposable folder `ydg3c0611`, then confirmed both were absent through Bilibili Web API state.
 - The smoke test exposed the delete endpoint field name `media_ids`, which was fixed in `src-tauri/src/bili/client.rs`.
+- Workstation now preselects the currently filtered favorite folder in the delete controls, so folder operations follow the user's active review context.
 
 ## Blocked by
 

@@ -25,6 +25,7 @@ import {
   selectClassificationDraftRows,
   type ClassificationDraftMode,
 } from "@/lib/classification-draft-prefill";
+import { syncFavoriteFolderManagerSelection } from "@/lib/favorite-folder-workstation-ui";
 import { CHECKBOX_CLASS_NAME } from "@/lib/ui-style";
 import {
   tauri,
@@ -490,6 +491,24 @@ export function WorkstationPage() {
   }, [favoriteFolders, resourceFilter, selectedFolderId]);
 
   useEffect(() => {
+    const nextSelection = syncFavoriteFolderManagerSelection(favoriteFolders, selectedFolderId, {
+      folderRenameId,
+      folderRenameTitle,
+      folderDeleteId,
+    });
+
+    if (nextSelection.folderRenameId !== folderRenameId) {
+      setFolderRenameId(nextSelection.folderRenameId);
+    }
+    if (nextSelection.folderRenameTitle !== folderRenameTitle) {
+      setFolderRenameTitle(nextSelection.folderRenameTitle);
+    }
+    if (nextSelection.folderDeleteId !== folderDeleteId) {
+      setFolderDeleteId(nextSelection.folderDeleteId);
+    }
+  }, [favoriteFolders, folderDeleteId, folderRenameId, folderRenameTitle, selectedFolderId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     Promise.all([
@@ -757,6 +776,11 @@ export function WorkstationPage() {
 
   function clearReviewFilters() {
     setReviewFilters(DEFAULT_CLASSIFICATION_REVIEW_FILTERS);
+  }
+
+  function selectFavoriteOperationSourceFolder(folderId: string) {
+    setResourceFilter("bili_favorite_video");
+    setSelectedFolderId(folderId);
   }
 
   async function createFavoritePlan(action: FavoriteOperationAction) {
@@ -1477,6 +1501,22 @@ export function WorkstationPage() {
                     Preview Delete Folder
                   </button>
                 </div>
+                <label className="block border-t border-border pt-3 text-sm text-muted-foreground">
+                  Source folder
+                  <select
+                    value={selectedFolderId}
+                    onChange={(event) => selectFavoriteOperationSourceFolder(event.target.value)}
+                    disabled={favoriteFolders.length === 0}
+                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                  >
+                    <option value="all">Select source folder</option>
+                    {favoriteFolders.map((folder) => (
+                      <option key={folder.externalId} value={folder.externalId}>
+                        {folder.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label className="block text-sm text-muted-foreground">
                   Copy or move target
                   <select

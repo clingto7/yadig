@@ -32,6 +32,7 @@ Copy should reuse the safety model already established for move/delete: complete
 
 - Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
 - The 2026-06-11 smoke test copied public test video `BV13U7k6HEjK` into a disposable target folder and confirmed target `media_count: 1` through Bilibili Web API state.
+- Favorite Remote Operations now includes its own source-folder selector and switches the review list to Favorites when selected, so copy/move/delete plans can be prepared from the operation card itself.
 
 ## Blocked by
 

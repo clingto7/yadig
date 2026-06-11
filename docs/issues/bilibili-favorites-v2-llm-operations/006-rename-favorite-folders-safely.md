@@ -29,6 +29,7 @@ If required metadata is missing or stale, the app should ask the user to resync 
 
 - Covered by `docs/research/bilibili-favorites-v2-smoke-test-report.md`.
 - The 2026-06-11 smoke test renamed disposable folder `ydg2a0611` to `ydg2ar0611` and confirmed remote visibility through Bilibili Web API state.
+- Workstation now preselects the currently filtered favorite folder in the rename controls, while preserving the user's in-progress new-title draft.
 
 ## Blocked by
 
