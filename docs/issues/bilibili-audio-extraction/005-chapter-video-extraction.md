@@ -23,12 +23,20 @@ Handle long videos that have chapter markers (view_points) in the progress bar. 
 ## Acceptance criteria
 
 - [ ] Video with 8 chapters returns 8 AudioSegments with correct titles and timestamps
-- [ ] FFmpeg splits audio at chapter boundaries without quality loss (-c copy)
-- [ ] Split files are named `{video_title} - {chapter_title}.m4a`
-- [ ] If FFmpeg is not installed, full audio extraction still works; chapter splitting shows install instructions
-- [ ] Fallback to re-encoding works if -c copy fails
-- [ ] Temp files are cleaned up after splitting
-- [ ] `cargo check` passes
+- [x] FFmpeg splits audio at chapter boundaries without quality loss (-c copy)
+- [x] Split files are named `{video_title} - {chapter_title}.m4a`
+- [x] If FFmpeg is not installed, full audio extraction still works; chapter splitting shows install instructions
+- [x] Fallback to re-encoding works if -c copy fails
+- [x] Temp files are cleaned up after splitting
+- [x] `cargo check` passes
+
+## Implementation notes
+
+- Chapter detection uses `/x/player/wbi/v2` `view_points` for the selected page.
+- When FFmpeg is available, extraction downloads the full audio to a temp file, splits by chapter timestamps, removes the temp file, and returns `ExtractionType::Chapters`.
+- When FFmpeg is unavailable, extraction returns the full audio as a single segment with `ExtractionType::Chapters` plus a warning explaining that FFmpeg is needed for chapter splitting.
+- Search result warnings are shown inline, so users can see why a chapter video produced only one saved file.
+- A live 8-chapter Bilibili sample has not been manually smoke-tested in this slice, so that criterion remains open.
 
 ## Blocked by
 

@@ -120,6 +120,7 @@ pub fn run() {
             commands::search::update_discogs_keys,
             commands::search::download_audio,
             commands::search::open_url,
+            commands::search::open_path,
             commands::bilibili::bili_qr_login_start,
             commands::bilibili::bili_qr_login_poll,
             commands::bilibili::bili_cookie_login,

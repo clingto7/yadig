@@ -1,5 +1,8 @@
 use crate::bili::auth::{BiliAuth, BiliSession};
-use crate::bili::extractor::{select_best_audio, AudioSegment, ExtractionResult, ExtractionType};
+use crate::bili::extractor::{
+    chapter_ffmpeg_unavailable_warning, select_best_audio, AudioSegment, ExtractionResult,
+    ExtractionType,
+};
 use crate::bili::ffmpeg;
 use crate::bili::types::*;
 use crate::bili::url::parse_bilibili_url;
@@ -828,20 +831,33 @@ impl BiliClient {
                 video_title: info.title.clone(),
                 segments: audio_segments,
                 extraction_type: ExtractionType::Chapters,
+                warnings: Vec::new(),
             })
         } else {
             // No chapters or FFmpeg not available — extract as single
             let segment = self
                 .download_page_audio(info, page_info, download_dir)
                 .await?;
+            let warnings = if has_chapters {
+                let chapter_count = player
+                    .as_ref()
+                    .map(|p| p.view_points.len())
+                    .unwrap_or_default();
+                vec![chapter_ffmpeg_unavailable_warning(chapter_count)]
+            } else {
+                Vec::new()
+            };
             Ok(ExtractionResult {
                 video_title: info.title.clone(),
                 segments: vec![segment],
-                extraction_type: if info.pages.len() > 1 {
+                extraction_type: if has_chapters {
+                    ExtractionType::Chapters
+                } else if info.pages.len() > 1 {
                     ExtractionType::MultiPart
                 } else {
                     ExtractionType::Single
                 },
+                warnings,
             })
         }
     }
@@ -864,6 +880,7 @@ impl BiliClient {
             video_title: info.title.clone(),
             segments,
             extraction_type: ExtractionType::MultiPart,
+            warnings: Vec::new(),
         })
     }
 
@@ -965,6 +982,7 @@ impl BiliClient {
             video_title: season.meta.name,
             segments,
             extraction_type: ExtractionType::Collection,
+            warnings: Vec::new(),
         })
     }
 
@@ -991,6 +1009,7 @@ impl BiliClient {
             video_title: info.title.clone(),
             segments: vec![segment],
             extraction_type: ExtractionType::MultiPart,
+            warnings: Vec::new(),
         })
     }
 

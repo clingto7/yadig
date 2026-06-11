@@ -22,14 +22,21 @@ The core extraction path: given a Bilibili BV号, fetch the video info, get the 
 
 ## Acceptance criteria
 
-- [ ] Given a BV号, the backend fetches video info and audio stream URL
-- [ ] Audio stream is downloaded to user's Downloads folder as `.m4a`
-- [ ] Best available quality is selected based on login state (64K anonymous, 192K logged in)
+- [x] Given a BV号, the backend fetches video info and audio stream URL
+- [x] Audio stream is downloaded to user's Downloads folder as `.m4a`
+- [x] Best available quality is selected based on login state (64K anonymous, 192K logged in)
 - [ ] Downloaded file plays correctly in standard audio players
-- [ ] Proxy support works (HTTPS_PROXY env var respected)
-- [ ] Error handling: invalid BV号, network failure, expired stream URL all return clear errors
-- [ ] Frontend shows extraction progress and success/failure state
-- [ ] `cargo check` and `pnpm build` pass
+- [x] Proxy support works (HTTPS_PROXY env var respected)
+- [x] Error handling: invalid BV号, network failure, expired stream URL all return clear errors
+- [x] Frontend shows extraction progress and success/failure state
+- [x] `cargo check` and `pnpm build` pass
+
+## Implementation notes
+
+- Implemented through `BiliClient::extract_audio`, `video_info`, `playurl`, and `download_stream`.
+- `download_stream` remuxes Bilibili DASH audio to a standard MP4 container when FFmpeg is available, then falls back to the raw stream if remuxing fails.
+- Frontend result contracts now serialize as camelCase (`videoTitle`, `filePath`, `audioUrl`, `extractionType`) to match `src/lib/tauri.ts`.
+- Manual playback in external audio players has not been run in this slice, so that acceptance criterion remains open.
 
 ## Blocked by
 

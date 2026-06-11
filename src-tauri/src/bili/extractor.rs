@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single extracted audio segment with its metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioSegment {
     pub title: String,
     pub file_path: String,
@@ -13,10 +14,13 @@ pub struct AudioSegment {
 
 /// Result of an audio extraction operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtractionResult {
     pub video_title: String,
     pub segments: Vec<AudioSegment>,
     pub extraction_type: ExtractionType,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Extraction type based on video structure
@@ -30,6 +34,14 @@ pub enum ExtractionType {
     Chapters,
     /// Part of a collection (ugc_season)
     Collection,
+}
+
+pub fn chapter_ffmpeg_unavailable_warning(chapter_count: usize) -> String {
+    let suffix = if chapter_count == 1 { "" } else { "s" };
+    format!(
+        "Detected {chapter_count} chapter{suffix}, but FFmpeg is not installed. \
+         Downloaded the full audio instead; install FFmpeg to enable chapter splitting."
+    )
 }
 
 /// Detect the structure of a video to determine extraction strategy.
@@ -207,5 +219,43 @@ mod tests {
     fn select_best_audio_empty_streams() {
         let streams = vec![];
         assert!(select_best_audio(&streams, true, true).is_none());
+    }
+
+    #[test]
+    fn extraction_result_serializes_to_frontend_camel_case_contract() {
+        let result = ExtractionResult {
+            video_title: "Album".to_string(),
+            segments: vec![AudioSegment {
+                title: "Part 1".to_string(),
+                file_path: "/tmp/part-1.m4a".to_string(),
+                duration: 120,
+                quality: 30280,
+                audio_url: "https://example.com/audio.m4a".to_string(),
+            }],
+            extraction_type: ExtractionType::MultiPart,
+            warnings: vec!["One warning".to_string()],
+        };
+
+        let serialized = serde_json::to_value(result).expect("result should serialize");
+
+        assert_eq!(serialized["videoTitle"], "Album");
+        assert_eq!(serialized["extractionType"], "MultiPart");
+        assert_eq!(serialized["segments"][0]["filePath"], "/tmp/part-1.m4a");
+        assert_eq!(
+            serialized["segments"][0]["audioUrl"],
+            "https://example.com/audio.m4a"
+        );
+        assert_eq!(serialized["warnings"][0], "One warning");
+        assert!(serialized.get("video_title").is_none());
+        assert!(serialized["segments"][0].get("file_path").is_none());
+    }
+
+    #[test]
+    fn chapter_fallback_warning_explains_ffmpeg_install_path() {
+        let warning = super::chapter_ffmpeg_unavailable_warning(3);
+
+        assert!(warning.contains("3 chapter"));
+        assert!(warning.contains("FFmpeg"));
+        assert!(warning.contains("full audio"));
     }
 }

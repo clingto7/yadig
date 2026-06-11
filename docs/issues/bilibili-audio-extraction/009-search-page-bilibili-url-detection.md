@@ -25,15 +25,24 @@ When the user pastes a Bilibili URL into yadig's search bar, detect it and switc
 
 ## Acceptance criteria
 
-- [ ] Pasting `bilibili.com/video/BV1xxx` triggers extraction mode
+- [x] Pasting `bilibili.com/video/BV1xxx` triggers extraction mode
 - [ ] Pasting `b23.tv/xxx` triggers extraction mode (short link resolved)
-- [ ] Extraction results display correctly for all types (single/multipart/chapters/collection)
-- [ ] Play button streams audio through the global player
+- [x] Extraction results display correctly for all types (single/multipart/chapters/collection)
+- [x] Play button streams audio through the global player
 - [ ] Download button saves file and shows notification
-- [ ] "Download All" for multi-part/chapters extracts all segments
-- [ ] Error states (invalid URL, network error, auth required) show clear messages
-- [ ] Normal (non-Bilibili) search still works as before
-- [ ] `pnpm build` passes
+- [x] "Download All" for multi-part/chapters extracts all segments
+- [x] Error states (invalid URL, network error, auth required) show clear messages
+- [x] Normal (non-Bilibili) search still works as before
+- [x] `pnpm build` passes
+
+## Implementation notes
+
+- Search page URL detection covers `bilibili.com/video/BV`, `b23.tv/`, and collection-detail URLs.
+- Extraction results render Bilibili single/multi-part/chapter/collection results through the shared result panel.
+- Multi-segment results expose a batch action; when extraction already saved local files, the action opens the saved folder instead of re-downloading remote audio URLs.
+- Chapter fallback warnings are displayed inline for FFmpeg-unavailable environments.
+- Toast/notification feedback for saved files is not implemented yet; the current UI opens saved local files or folders.
+- The `b23.tv` short-link backend path is implemented, but a live short-link manual smoke test has not been run in this slice.
 
 ## Blocked by
 

@@ -1,9 +1,14 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
-import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music } from "lucide-react";
+import { Search as SearchIcon, Loader2, ExternalLink, Star, Clock, ChevronDown, Copy, Check, Play, Pause, Download, Music, CircleAlert } from "lucide-react";
 import { tauri } from "@/lib/tauri";
 import { saveSearch, listSearches, addFavorite, isFavorite } from "@/lib/db";
 import { usePlayer } from "@/lib/player-context";
+import {
+  buildBiliBatchDownloadState,
+  getBiliSavedFolderPath,
+  type BiliBatchDownloadProgress,
+} from "@/lib/bili-extraction-ui";
 import type { ContentItem, SearchResult, YoutubeExtractionResult } from "@/types/source";
 import type { ExtractionResult, AudioSegment } from "@/lib/tauri";
 
@@ -571,6 +576,9 @@ function ContentCard({ item, sourceName }: { item: ContentItem; sourceName: stri
 function BiliExtractionResult({ result }: { result: ExtractionResult }) {
   const player = usePlayer();
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<BiliBatchDownloadProgress | null>(null);
+  const batchDownloadState = buildBiliBatchDownloadState(result, batchProgress);
+  const savedFolderPath = getBiliSavedFolderPath(result);
 
   async function handlePlaySegment(seg: AudioSegment) {
     // Fetch fresh playurl (stream URLs expire in 120min)
@@ -590,16 +598,48 @@ function BiliExtractionResult({ result }: { result: ExtractionResult }) {
     }
   }
 
+  function segmentFilename(seg: AudioSegment): string {
+    const rawName = `${result.videoTitle} - ${seg.title}`;
+    const safeName = rawName.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
+    return `${safeName}.m4a`;
+  }
+
+  async function downloadSegment(seg: AudioSegment) {
+    if (seg.filePath) {
+      await tauri.openPath({ path: seg.filePath });
+      return;
+    }
+    await tauri.downloadAudio({ url: seg.audioUrl, filename: segmentFilename(seg) });
+  }
+
   async function handleDownloadSegment(seg: AudioSegment) {
     setDownloading(seg.title);
     try {
-      const rawName = `${result.videoTitle} - ${seg.title}`;
-      const safeName = rawName.replace(/[^a-zA-Z0-9\u4e00-\u9fff _-]/g, "").trim() || "track";
-      await tauri.downloadAudio({ url: seg.audioUrl, filename: `${safeName}.m4a` });
+      await downloadSegment(seg);
     } catch (e) {
       console.error("Download failed:", e);
     } finally {
       setDownloading(null);
+    }
+  }
+
+  async function handleDownloadAll() {
+    const total = result.segments.length;
+    setBatchProgress({ completed: 0, total });
+    try {
+      if (savedFolderPath) {
+        await tauri.openPath({ path: savedFolderPath });
+        setBatchProgress({ completed: total, total });
+      } else {
+        for (const [index, seg] of result.segments.entries()) {
+          await downloadSegment(seg);
+          setBatchProgress({ completed: index + 1, total });
+        }
+      }
+    } catch (e) {
+      console.error("Batch download failed:", e);
+    } finally {
+      setBatchProgress(null);
     }
   }
 
@@ -612,16 +652,44 @@ function BiliExtractionResult({ result }: { result: ExtractionResult }) {
 
   return (
     <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
-      <div className="flex items-center gap-2 mb-3">
+      <div className="mb-3 flex items-center gap-2">
         <Music className="h-4 w-4 text-primary" />
-        <h3 className="font-medium">{result.videoTitle}</h3>
+        <h3 className="min-w-0 flex-1 truncate font-medium">{result.videoTitle}</h3>
         <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
           {result.extractionType}
         </span>
         <span className="text-xs text-muted-foreground">
           {result.segments.length} segment{result.segments.length !== 1 ? "s" : ""}
         </span>
+        {batchDownloadState.show && (
+          <button
+            onClick={handleDownloadAll}
+            disabled={batchDownloadState.disabled}
+            className="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent disabled:opacity-50"
+            title="Download all segments"
+          >
+            {batchProgress ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            {batchDownloadState.label}
+          </button>
+        )}
       </div>
+      {result.warnings.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {result.warnings.map((warning) => (
+            <div
+              key={warning}
+              className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200"
+            >
+              <CircleAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+              <span>{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="space-y-2">
         {result.segments.map((seg: AudioSegment, i: number) => (
           <div

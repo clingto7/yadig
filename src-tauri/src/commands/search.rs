@@ -1,8 +1,8 @@
-use tauri::State;
 use crate::config::DiscogsKeys;
+use crate::error::{Result, YadigError};
 use crate::source::registry::SourceRegistry;
 use crate::source::types::*;
-use crate::error::{Result, YadigError};
+use tauri::State;
 
 #[tauri::command]
 pub async fn search_sources(
@@ -30,9 +30,7 @@ pub async fn fetch_latest(
 }
 
 #[tauri::command]
-pub async fn list_sources(
-    registry: State<'_, SourceRegistry>,
-) -> Result<Vec<Source>> {
+pub async fn list_sources(registry: State<'_, SourceRegistry>) -> Result<Vec<Source>> {
     Ok(registry.list_sources())
 }
 
@@ -53,7 +51,11 @@ pub async fn update_discogs_keys(
     secret: String,
 ) -> Result<()> {
     *keys.key.write().unwrap() = if key.is_empty() { None } else { Some(key) };
-    *keys.secret.write().unwrap() = if secret.is_empty() { None } else { Some(secret) };
+    *keys.secret.write().unwrap() = if secret.is_empty() {
+        None
+    } else {
+        Some(secret)
+    };
     Ok(())
 }
 
@@ -64,7 +66,8 @@ pub async fn download_audio(url: String, filename: String) -> Result<String> {
         .ok_or_else(|| YadigError::Network("Could not find Downloads folder".into()))?;
 
     // Sanitize and truncate filename to avoid ENAMETOOLONG
-    let safe_name: String = filename.chars()
+    let safe_name: String = filename
+        .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c => c,
@@ -74,7 +77,9 @@ pub async fn download_audio(url: String, filename: String) -> Result<String> {
     let truncated = if safe_name.len() > 200 {
         let mut s = String::new();
         for c in safe_name.chars() {
-            if s.len() + c.len_utf8() > 200 { break; }
+            if s.len() + c.len_utf8() > 200 {
+                break;
+            }
             s.push(c);
         }
         s
@@ -83,17 +88,29 @@ pub async fn download_audio(url: String, filename: String) -> Result<String> {
     };
 
     let filepath = downloads.join(&truncated);
-    eprintln!("[download_audio] writing to: {:?} (filename {} bytes)", filepath, truncated.len());
+    eprintln!(
+        "[download_audio] writing to: {:?} (filename {} bytes)",
+        filepath,
+        truncated.len()
+    );
 
     let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await
+    let resp = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| YadigError::Network(format!("Download failed: {}", e)))?;
 
     if !resp.status().is_success() {
-        return Err(YadigError::Network(format!("Download HTTP error: {}", resp.status())));
+        return Err(YadigError::Network(format!(
+            "Download HTTP error: {}",
+            resp.status()
+        )));
     }
 
-    let bytes = resp.bytes().await
+    let bytes = resp
+        .bytes()
+        .await
         .map_err(|e| YadigError::Network(format!("Download read error: {}", e)))?;
 
     std::fs::write(&filepath, &bytes)
@@ -105,7 +122,13 @@ pub async fn download_audio(url: String, filename: String) -> Result<String> {
 /// Open a URL in the system default browser
 #[tauri::command]
 pub async fn open_url(url: String) -> Result<()> {
-    open::that(&url)
-        .map_err(|e| YadigError::Network(format!("Failed to open URL: {}", e)))?;
+    open::that(&url).map_err(|e| YadigError::Network(format!("Failed to open URL: {}", e)))?;
+    Ok(())
+}
+
+/// Open a local file or folder with the system default application.
+#[tauri::command]
+pub async fn open_path(path: String) -> Result<()> {
+    open::that(&path).map_err(|e| YadigError::Network(format!("Failed to open path: {}", e)))?;
     Ok(())
 }

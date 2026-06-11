@@ -14,12 +14,19 @@ Extend the extraction path to handle videos with multiple parts (分P). When a v
 
 ## Acceptance criteria
 
-- [ ] Video with 5 分P returns 5 AudioSegments with correct titles and durations
-- [ ] Each 分P can be extracted independently via `bili_extract_segment`
-- [ ] "Download All" extracts all parts to individual files
-- [ ] File naming: `{video_title} - {part_title}.m4a`
-- [ ] Frontend shows segment list with play/download controls
-- [ ] `cargo check` passes
+- [x] Video with 5 分P returns 5 AudioSegments with correct titles and durations
+- [x] Each 分P can be extracted independently via `bili_extract_segment`
+- [x] "Download All" extracts all parts to individual files
+- [x] File naming: `{video_title} - {part_title}.m4a`
+- [x] Frontend shows segment list with play/download controls
+- [x] `cargo check` passes
+
+## Implementation notes
+
+- `bili_extract_audio` extracts every page for a multi-part video when no `?p=N` page is specified.
+- `bili_extract_segment` keeps the independent single-cid extraction path available for future selective UI.
+- The Search page now shows a `Download All` action for multi-segment results. Because extraction already writes files under `Downloads/yadig`, the action opens the saved folder when local file paths are available; it only falls back to URL download if no local path exists.
+- Frontend helper contract coverage lives in `src/lib/bili-extraction-ui.contract.ts`.
 
 ## Blocked by
 

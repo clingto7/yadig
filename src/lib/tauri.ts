@@ -20,6 +20,7 @@ export interface ExtractionResult {
   videoTitle: string;
   segments: AudioSegment[];
   extractionType: "Single" | "MultiPart" | "Chapters" | "Collection";
+  warnings: string[];
 }
 
 export type LibraryItemType =
@@ -306,6 +307,9 @@ export const tauri = {
 
   openUrl: (params: { url: string }): Promise<void> =>
     invoke("open_url", params),
+
+  openPath: (params: { path: string }): Promise<void> =>
+    invoke("open_path", params),
 
   // Bilibili auth
   biliQrLoginStart: (): Promise<{ url: string; qrcodeKey: string }> =>
