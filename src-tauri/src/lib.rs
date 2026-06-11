@@ -122,6 +122,7 @@ pub fn run() {
             commands::bilibili::bili_get_playurl,
             commands::library::bili_sync_library,
             commands::library::llm_analyze_items,
+            commands::library::llm_test_provider,
             commands::library::create_bili_audio_extraction_plan,
             commands::library::create_bili_favorite_operation_plan,
             commands::library::execute_bili_audio_extraction_plan,

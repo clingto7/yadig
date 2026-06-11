@@ -33,6 +33,10 @@ import {
   sanitizeOperationError,
 } from "@/lib/operation-plan-history";
 
+const DEFAULT_LLM_PROVIDER = "openai-compatible";
+const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
+const DEFAULT_LLM_MODEL = "mimo-v2.5-pro";
+
 type ResourceFilter = "all" | LibraryItem["itemType"];
 const OPERATION_ITEM_STATUSES: OperationPlanItemStatus[] = [
   "pending",
@@ -254,10 +258,10 @@ export function WorkstationPage() {
     try {
       const store = await Store.load("settings.json");
       const provider = {
-        provider: (await store.get<string>("llm_provider")) ?? "openai-compatible",
-        baseUrl: (await store.get<string>("llm_base_url")) ?? "https://api.openai.com/v1",
+        provider: (await store.get<string>("llm_provider")) ?? DEFAULT_LLM_PROVIDER,
+        baseUrl: (await store.get<string>("llm_base_url")) ?? DEFAULT_LLM_BASE_URL,
         apiKey: (await store.get<string>("llm_api_key")) ?? null,
-        model: (await store.get<string>("llm_model")) ?? "gpt-4o-mini",
+        model: (await store.get<string>("llm_model")) ?? DEFAULT_LLM_MODEL,
       };
       const result = await tauri.llmAnalyzeItems({
         instruction,

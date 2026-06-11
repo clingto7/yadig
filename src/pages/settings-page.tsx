@@ -3,7 +3,19 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Key, Eye, EyeOff, LogIn, LogOut, QrCode, Cookie } from "lucide-react";
 import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
+import type { LlmProviderTestError, LlmProviderTestErrorKind } from "@/lib/tauri";
 import { clearPersistedBiliSession, savePersistedBiliSession } from "@/lib/bili-session-store";
+
+const DEFAULT_LLM_PROVIDER = "openai-compatible";
+const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
+const DEFAULT_LLM_MODEL = "mimo-v2.5-pro";
+const LLM_TEST_ERROR_LABELS: Record<LlmProviderTestErrorKind, string> = {
+  missing_config: "Missing config",
+  auth: "Authentication failed",
+  network: "Network error",
+  incompatible_response: "Incompatible response",
+  invalid_json: "Invalid JSON",
+};
 
 export function SettingsPage() {
   const { data: sources } = useQuery({
@@ -110,24 +122,28 @@ function SourcesSection({ sources }: { sources?: { id: string; name: string; kin
 function ApiKeysSection() {
   const [discogsKey, setDiscogsKey] = useState("");
   const [discogsSecret, setDiscogsSecret] = useState("");
-  const [llmProvider, setLlmProvider] = useState("openai-compatible");
-  const [llmBaseUrl, setLlmBaseUrl] = useState("https://api.openai.com/v1");
-  const [llmModel, setLlmModel] = useState("gpt-4o-mini");
+  const [llmProvider, setLlmProvider] = useState(DEFAULT_LLM_PROVIDER);
+  const [llmBaseUrl, setLlmBaseUrl] = useState(DEFAULT_LLM_BASE_URL);
+  const [llmModel, setLlmModel] = useState(DEFAULT_LLM_MODEL);
   const [llmApiKey, setLlmApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [showLlmKey, setShowLlmKey] = useState(false);
   const [savedDiscogs, setSavedDiscogs] = useState(false);
   const [savedLlm, setSavedLlm] = useState(false);
+  const [llmTestStatus, setLlmTestStatus] = useState<{
+    state: "idle" | "testing" | "success" | "error";
+    message: string;
+  }>({ state: "idle", message: "" });
 
   useEffect(() => {
     (async () => {
       const store = await Store.load("settings.json");
       setDiscogsKey((await store.get<string>("discogs_key")) ?? "");
       setDiscogsSecret((await store.get<string>("discogs_secret")) ?? "");
-      setLlmProvider((await store.get<string>("llm_provider")) ?? "openai-compatible");
-      setLlmBaseUrl((await store.get<string>("llm_base_url")) ?? "https://api.openai.com/v1");
-      setLlmModel((await store.get<string>("llm_model")) ?? "gpt-4o-mini");
+      setLlmProvider((await store.get<string>("llm_provider")) ?? DEFAULT_LLM_PROVIDER);
+      setLlmBaseUrl((await store.get<string>("llm_base_url")) ?? DEFAULT_LLM_BASE_URL);
+      setLlmModel((await store.get<string>("llm_model")) ?? DEFAULT_LLM_MODEL);
       setLlmApiKey((await store.get<string>("llm_api_key")) ?? "");
     })().catch((err) => console.error("Failed to load LLM settings:", err));
   }, []);
@@ -158,6 +174,31 @@ function ApiKeysSection() {
       setTimeout(() => setSavedLlm(false), 2000);
     } catch (err) {
       console.error("Failed to save LLM settings:", err);
+    }
+  }
+
+  async function handleTestLlm() {
+    setLlmTestStatus({ state: "testing", message: "Testing LLM provider..." });
+    try {
+      const result = await tauri.llmTestProvider({
+        provider: llmProvider.trim(),
+        baseUrl: llmBaseUrl.trim(),
+        apiKey: llmApiKey,
+        model: llmModel.trim(),
+      });
+      setLlmTestStatus({
+        state: "success",
+        message: result.usedResponseFormat
+          ? `Connected to ${result.provider} with ${result.model}.`
+          : `Connected to ${result.provider} with ${result.model}. JSON mode is not supported, so prompt-only JSON will be used.`,
+      });
+    } catch (err) {
+      const error = err as Partial<LlmProviderTestError>;
+      const prefix = error.kind ? `${LLM_TEST_ERROR_LABELS[error.kind]}: ` : "";
+      setLlmTestStatus({
+        state: "error",
+        message: `${prefix}${error.message ?? String(err)}`,
+      });
     }
   }
 
@@ -262,13 +303,35 @@ function ApiKeysSection() {
           <p className="mt-2 text-xs text-muted-foreground">
             Used by the media workstation for metadata classification and batch-operation suggestions.
           </p>
-          <button
-            onClick={handleSaveLlm}
-            disabled={!llmProvider.trim() || !llmBaseUrl.trim() || !llmModel.trim()}
-            className="mt-3 h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {savedLlm ? "Saved" : "Save LLM"}
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={handleSaveLlm}
+              disabled={!llmProvider.trim() || !llmBaseUrl.trim() || !llmModel.trim()}
+              className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {savedLlm ? "Saved" : "Save LLM"}
+            </button>
+            <button
+              onClick={handleTestLlm}
+              disabled={
+                llmTestStatus.state === "testing"
+                || !llmProvider.trim()
+                || !llmBaseUrl.trim()
+                || !llmModel.trim()
+                || !llmApiKey.trim()
+              }
+              className="h-9 rounded-md border border-border px-4 text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              {llmTestStatus.state === "testing" ? "Testing LLM" : "Test LLM"}
+            </button>
+          </div>
+          {llmTestStatus.state !== "idle" && (
+            <p className={`mt-2 text-xs ${
+              llmTestStatus.state === "error" ? "text-destructive" : "text-muted-foreground"
+            }`}>
+              {llmTestStatus.message}
+            </p>
+          )}
         </div>
       </div>
     </section>

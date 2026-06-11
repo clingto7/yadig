@@ -8,7 +8,10 @@ use crate::library::{
     AudioExtractionCandidate, BiliSyncResult, BiliSyncScope, FavoriteOperationPlanRequest,
     OperationPlan, OperationPlanItem, OperationPlanKind,
 };
-use crate::llm::{analyze_items, LlmAnalysisResponse, LlmAnalyzeItemsRequest};
+use crate::llm::{
+    analyze_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
+    LlmProviderConfig, LlmProviderTestError, LlmProviderTestResult,
+};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +33,13 @@ pub async fn bili_sync_library(
 #[tauri::command]
 pub async fn llm_analyze_items(request: LlmAnalyzeItemsRequest) -> Result<LlmAnalysisResponse> {
     analyze_items(request).await
+}
+
+#[tauri::command]
+pub async fn llm_test_provider(
+    provider: LlmProviderConfig,
+) -> std::result::Result<LlmProviderTestResult, LlmProviderTestError> {
+    test_llm_provider(provider).await
 }
 
 #[tauri::command]

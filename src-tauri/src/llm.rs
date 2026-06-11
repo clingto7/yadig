@@ -2,6 +2,41 @@ use crate::error::{Result, YadigError};
 use crate::library::LibraryItem;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProviderTestErrorKind {
+    MissingConfig,
+    Auth,
+    Network,
+    IncompatibleResponse,
+    InvalidJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmProviderTestError {
+    pub kind: LlmProviderTestErrorKind,
+    pub message: String,
+}
+
+impl LlmProviderTestError {
+    fn new(kind: LlmProviderTestErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: redact_llm_error(&message.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmProviderTestResult {
+    pub ok: bool,
+    pub provider: String,
+    pub model: String,
+    pub used_response_format: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmAnalysisResponse {
@@ -60,6 +95,49 @@ pub struct LlmProviderConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub model: String,
+}
+
+pub fn validate_llm_provider_config(
+    provider: &LlmProviderConfig,
+) -> std::result::Result<(), LlmProviderTestError> {
+    if provider.provider.trim().is_empty() {
+        return Err(LlmProviderTestError::new(
+            LlmProviderTestErrorKind::MissingConfig,
+            "LLM provider label is required",
+        ));
+    }
+    if provider.model.trim().is_empty() {
+        return Err(LlmProviderTestError::new(
+            LlmProviderTestErrorKind::MissingConfig,
+            "LLM model is required",
+        ));
+    }
+    if provider
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err(LlmProviderTestError::new(
+            LlmProviderTestErrorKind::MissingConfig,
+            "LLM base URL is required",
+        ));
+    }
+    if provider
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err(LlmProviderTestError::new(
+            LlmProviderTestErrorKind::MissingConfig,
+            "LLM API key is required",
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn parse_llm_analysis(raw: &str) -> Result<LlmAnalysisResponse> {
@@ -133,7 +211,10 @@ pub async fn analyze_items(request: LlmAnalyzeItemsRequest) -> Result<LlmAnalysi
         }
         Err(err) => Ok(metadata_fallback_analysis(
             &request,
-            Some(format!("LLM request failed; used local metadata fallback: {}", err)),
+            Some(format!(
+                "LLM request failed; used local metadata fallback: {}",
+                err
+            )),
         )),
     }
 }
@@ -157,6 +238,184 @@ pub fn build_openai_compatible_payload(
             }
         ]
     })
+}
+
+pub fn build_llm_provider_test_payload(
+    model: &str,
+    include_response_format: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "temperature": 0.0,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Return only a compact JSON object. No markdown."
+            },
+            {
+                "role": "user",
+                "content": "Return JSON exactly matching {\"ok\":true,\"provider\":\"test\"}."
+            }
+        ]
+    });
+
+    if include_response_format {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+
+    payload
+}
+
+pub fn parse_llm_provider_test_response(
+    body: &serde_json::Value,
+) -> std::result::Result<serde_json::Value, LlmProviderTestError> {
+    let content = body["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| {
+            LlmProviderTestError::new(
+                LlmProviderTestErrorKind::IncompatibleResponse,
+                "LLM test response missing message content",
+            )
+        })?;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(clean_json_response(content)).map_err(|err| {
+            LlmProviderTestError::new(
+                LlmProviderTestErrorKind::InvalidJson,
+                format!("LLM test response was not valid JSON: {err}"),
+            )
+        })?;
+
+    if !parsed.is_object() {
+        return Err(LlmProviderTestError::new(
+            LlmProviderTestErrorKind::InvalidJson,
+            "LLM test response JSON must be an object",
+        ));
+    }
+
+    Ok(parsed)
+}
+
+pub fn is_response_format_compatibility_error(status: u16, body: &str) -> bool {
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    lower.contains("response_format") || lower.contains("json_object")
+}
+
+pub fn llm_provider_http_error(status: u16, body: &str) -> LlmProviderTestError {
+    if is_response_format_compatibility_error(status, body) {
+        return LlmProviderTestError::new(
+            LlmProviderTestErrorKind::IncompatibleResponse,
+            format!("response_format is not compatible with this provider: {body}"),
+        );
+    }
+    let kind = if matches!(status, 401 | 403) {
+        LlmProviderTestErrorKind::Auth
+    } else {
+        LlmProviderTestErrorKind::Network
+    };
+    LlmProviderTestError::new(
+        kind,
+        format!("LLM provider test failed with status {status}: {body}"),
+    )
+}
+
+pub fn redact_llm_error(message: &str) -> String {
+    let mut redacted = message.to_string();
+    let patterns = [
+        (r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer <redacted>"),
+        (r"(?i)(api[_-]?key=)[^&\s]+", "$1<redacted>"),
+        (r"(?i)(token=)[^&\s]+", "$1<redacted>"),
+        (r"\btp-[A-Za-z0-9_-]+", "<redacted>"),
+        (r"\bsk-[A-Za-z0-9_-]+", "<redacted>"),
+    ];
+
+    for (pattern, replacement) in patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            redacted = re.replace_all(&redacted, replacement).to_string();
+        }
+    }
+
+    redacted
+}
+
+pub async fn test_llm_provider(
+    provider: LlmProviderConfig,
+) -> std::result::Result<LlmProviderTestResult, LlmProviderTestError> {
+    validate_llm_provider_config(&provider)?;
+    let result = call_llm_provider_test(&provider, true).await;
+    match result {
+        Ok(()) => Ok(LlmProviderTestResult {
+            ok: true,
+            provider: provider.provider,
+            model: provider.model,
+            used_response_format: true,
+        }),
+        Err(err)
+            if err.kind == LlmProviderTestErrorKind::IncompatibleResponse
+                && err.message.contains("response_format") =>
+        {
+            call_llm_provider_test(&provider, false).await?;
+            Ok(LlmProviderTestResult {
+                ok: true,
+                provider: provider.provider,
+                model: provider.model,
+                used_response_format: false,
+            })
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn call_llm_provider_test(
+    provider: &LlmProviderConfig,
+    include_response_format: bool,
+) -> std::result::Result<(), LlmProviderTestError> {
+    let api_key = provider.api_key.as_deref().unwrap_or("").trim();
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1")
+        .trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+    let payload = build_llm_provider_test_payload(&provider.model, include_response_format);
+    let client = crate::http_client::build_client("yadig/0.1.0");
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| {
+            LlmProviderTestError::new(
+                LlmProviderTestErrorKind::Network,
+                format!("LLM provider test request failed: {err}"),
+            )
+        })?;
+
+    let status = response.status();
+    let status_code = status.as_u16();
+    let body_text = response.text().await.map_err(|err| {
+        LlmProviderTestError::new(
+            LlmProviderTestErrorKind::Network,
+            format!("LLM provider test response read failed: {err}"),
+        )
+    })?;
+
+    if !status.is_success() {
+        return Err(llm_provider_http_error(status_code, &body_text));
+    }
+
+    let body: serde_json::Value = serde_json::from_str(&body_text).map_err(|err| {
+        LlmProviderTestError::new(
+            LlmProviderTestErrorKind::IncompatibleResponse,
+            format!("LLM provider test HTTP response was not JSON: {err}"),
+        )
+    })?;
+    parse_llm_provider_test_response(&body)?;
+    Ok(())
 }
 
 async fn call_openai_compatible(
@@ -344,5 +603,93 @@ mod tests {
             result.warning.as_deref(),
             Some("LLM provider is not configured; used local metadata fallback.")
         );
+    }
+
+    #[test]
+    fn validates_provider_config_for_explicit_test() {
+        let missing_key = LlmProviderConfig {
+            provider: "openai-compatible".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: Some("   ".to_string()),
+            model: "mimo-v2.5-pro".to_string(),
+        };
+
+        let err = validate_llm_provider_config(&missing_key).expect_err("api key is required");
+
+        assert_eq!(err.kind, LlmProviderTestErrorKind::MissingConfig);
+        assert_eq!(err.message, "LLM API key is required");
+    }
+
+    #[test]
+    fn builds_provider_test_payload_with_and_without_response_format() {
+        let with_response_format = build_llm_provider_test_payload("mimo-v2.5-pro", true);
+        assert_eq!(with_response_format["model"], "mimo-v2.5-pro");
+        assert_eq!(
+            with_response_format["response_format"]["type"].as_str(),
+            Some("json_object")
+        );
+
+        let prompt_only = build_llm_provider_test_payload("mimo-v2.5-pro", false);
+        assert!(prompt_only.get("response_format").is_none());
+        assert!(prompt_only["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("JSON"));
+    }
+
+    #[test]
+    fn parses_provider_test_success_response_content() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "```json\n{\"ok\":true,\"provider\":\"mimo\"}\n```"
+                }
+            }]
+        });
+
+        let parsed = parse_llm_provider_test_response(&body).expect("valid response parses");
+
+        assert_eq!(parsed["ok"].as_bool(), Some(true));
+        assert_eq!(parsed["provider"].as_str(), Some("mimo"));
+    }
+
+    #[test]
+    fn classifies_response_format_incompatibility() {
+        let body = "{\"error\":{\"message\":\"response_format is not supported\"}}";
+        let model_body = "{\"error\":{\"message\":\"model is unsupported\"}}";
+
+        assert!(is_response_format_compatibility_error(400, body));
+        assert!(!is_response_format_compatibility_error(401, body));
+        assert!(!is_response_format_compatibility_error(400, model_body));
+    }
+
+    #[test]
+    fn classifies_provider_test_http_errors() {
+        let auth = llm_provider_http_error(401, "{\"error\":\"bad Bearer sk-test-secret\"}");
+        assert_eq!(auth.kind, LlmProviderTestErrorKind::Auth);
+        assert!(!auth.message.contains("sk-test-secret"));
+
+        let incompatible =
+            llm_provider_http_error(400, "{\"error\":\"response_format is not supported\"}");
+        assert_eq!(
+            incompatible.kind,
+            LlmProviderTestErrorKind::IncompatibleResponse
+        );
+
+        let network = llm_provider_http_error(429, "{\"error\":\"rate limited\"}");
+        assert_eq!(network.kind, LlmProviderTestErrorKind::Network);
+    }
+
+    #[test]
+    fn redacts_llm_api_secrets_from_errors() {
+        let raw = "Authorization: Bearer sk-test-secret api_key=tp-secret-token token-plan-cn.xiaomimimo.com/v1?api_key=abc";
+
+        let redacted = redact_llm_error(raw);
+
+        assert!(!redacted.contains("sk-test-secret"));
+        assert!(!redacted.contains("tp-secret-token"));
+        assert!(!redacted.contains("api_key=abc"));
+        assert!(redacted.contains("Bearer <redacted>"));
+        assert!(redacted.contains("api_key=<redacted>"));
     }
 }

@@ -104,6 +104,25 @@ export interface LlmAnalyzeItemsRequest {
   provider: LlmProviderConfig | null;
 }
 
+export type LlmProviderTestErrorKind =
+  | "missing_config"
+  | "auth"
+  | "network"
+  | "incompatible_response"
+  | "invalid_json";
+
+export interface LlmProviderTestError {
+  kind: LlmProviderTestErrorKind;
+  message: string;
+}
+
+export interface LlmProviderTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  usedResponseFormat: boolean;
+}
+
 export interface AudioExtractionCandidate {
   bvid: string;
   title: string;
@@ -249,6 +268,9 @@ export const tauri = {
 
   llmAnalyzeItems: (request: LlmAnalyzeItemsRequest): Promise<LlmAnalysisResponse> =>
     invoke("llm_analyze_items", { request }),
+
+  llmTestProvider: (provider: LlmProviderConfig): Promise<LlmProviderTestResult> =>
+    invoke("llm_test_provider", { provider }),
 
   createBiliAudioExtractionPlan: (params: { candidates: AudioExtractionCandidate[] }): Promise<OperationPlan> =>
     invoke("create_bili_audio_extraction_plan", params),
