@@ -18,3 +18,7 @@ export function qrLoginUiState(code: BiliQrPollCode): BiliQrUiState {
   }
   return { message: "Waiting for scan...", expired: false, waiting: true };
 }
+
+export function biliAccountTierLabel(isPremium: boolean): "Premium" | "Standard" {
+  return isPremium ? "Premium" : "Standard";
+}

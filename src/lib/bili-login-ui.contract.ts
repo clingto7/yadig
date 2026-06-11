@@ -1,4 +1,4 @@
-import { qrLoginUiState } from "@/lib/bili-login-ui";
+import { biliAccountTierLabel, qrLoginUiState } from "@/lib/bili-login-ui";
 
 const expired = qrLoginUiState(86038);
 if (!expired.expired || expired.message !== "QR code expired.") {
@@ -13,4 +13,12 @@ if (scanned.expired || !scanned.waiting || !scanned.message.includes("confirm"))
 const success = qrLoginUiState(0);
 if (success.expired || success.waiting || !success.message.includes("successful")) {
   throw new Error("Successful QR codes should stop waiting without showing expiration.");
+}
+
+if (biliAccountTierLabel(true) !== "Premium") {
+  throw new Error("Premium accounts must show a Premium tier label.");
+}
+
+if (biliAccountTierLabel(false) !== "Standard") {
+  throw new Error("Standard accounts must show a Standard tier label.");
 }

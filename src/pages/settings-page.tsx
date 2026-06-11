@@ -5,7 +5,7 @@ import { Store } from "@tauri-apps/plugin-store";
 import { tauri } from "@/lib/tauri";
 import type { LlmProviderTestError, LlmProviderTestErrorKind } from "@/lib/tauri";
 import { clearPersistedBiliSession, savePersistedBiliSession } from "@/lib/bili-session-store";
-import { qrLoginUiState } from "@/lib/bili-login-ui";
+import { biliAccountTierLabel, qrLoginUiState } from "@/lib/bili-login-ui";
 
 const DEFAULT_LLM_PROVIDER = "openai-compatible";
 const DEFAULT_LLM_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
@@ -495,11 +495,13 @@ function BiliLoginSection() {
               <div className="flex items-center gap-2">
                 <LogIn className="h-4 w-4 text-primary" />
                 <span className="font-medium">{status.username ?? "Logged in"}</span>
-                {status.isPremium && (
-                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
-                    Premium
-                  </span>
-                )}
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  status.isPremium
+                    ? "bg-primary/15 text-primary"
+                    : "bg-secondary text-secondary-foreground"
+                }`}>
+                  {biliAccountTierLabel(status.isPremium)}
+                </span>
               </div>
               <button
                 onClick={handleLogout}
