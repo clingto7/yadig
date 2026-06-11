@@ -6,6 +6,7 @@ import type {
   LibraryCollection,
   LibraryCollectionType,
   LibraryItem,
+  LlmClassificationItem,
   LlmItemAnalysis,
   LlmProviderConfig,
   OperationPlan,
@@ -214,6 +215,20 @@ type OperationPlanItemRow = {
   updated_at: string;
 };
 
+type LlmClassificationRow = {
+  external_id: string;
+  category: string;
+  suggested_tags_json: string;
+  reason: string;
+  confidence: number;
+  suggested_action_kind: string | null;
+  suggested_action_target: string | null;
+  provenance: LlmClassificationItem["provenance"];
+  provider: string;
+  model: string;
+  analysis_at: string;
+};
+
 export type BiliFavoriteOperationPlanKind = Extract<
   OperationPlan["kind"],
   "bili_batch_move" | "bili_batch_delete"
@@ -307,6 +322,37 @@ function mapOperationPlanItemRow(row: OperationPlanItemRow): OperationPlanHistor
     resourceType: row.resource_type,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function parseSuggestedTags(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function mapLlmClassificationRow(row: LlmClassificationRow): LlmClassificationItem {
+  return {
+    externalId: row.external_id,
+    category: row.category,
+    suggestedTags: parseSuggestedTags(row.suggested_tags_json),
+    reason: row.reason,
+    confidence: row.confidence,
+    suggestedAction: row.suggested_action_kind
+      ? {
+          kind: row.suggested_action_kind,
+          target: row.suggested_action_target,
+        }
+      : null,
+    provenance: row.provenance,
+    provider: row.provider,
+    model: row.model,
+    analysisAt: row.analysis_at,
   };
 }
 
@@ -650,6 +696,102 @@ export async function listLatestLlmAnalyses(): Promise<LlmItemAnalysis[]> {
       return [];
     }
   });
+}
+
+export async function listLatestLlmClassifications(): Promise<LlmClassificationItem[]> {
+  const d = await getDb();
+  const rows = await d.select<LlmClassificationRow[]>(
+    `SELECT li.external_id,
+            lc.category,
+            lc.suggested_tags_json,
+            lc.reason,
+            lc.confidence,
+            lc.suggested_action_kind,
+            lc.suggested_action_target,
+            lc.provenance,
+            lc.provider,
+            lc.model,
+            lc.analysis_at
+     FROM llm_classifications lc
+     INNER JOIN library_items li ON li.id = lc.item_id
+     INNER JOIN (
+       SELECT item_id, MAX(id) AS latest_id
+       FROM llm_classifications
+       GROUP BY item_id
+     ) latest ON latest.latest_id = lc.id
+     ORDER BY datetime(lc.analysis_at) DESC, lc.id DESC`,
+    []
+  );
+
+  return rows.map(mapLlmClassificationRow);
+}
+
+export async function saveLlmClassifications(
+  items: LibraryItem[],
+  classifications: LlmClassificationItem[]
+): Promise<void> {
+  if (classifications.length === 0) return;
+
+  const d = await getDb();
+  const itemsByExternalId = new Map(items.map((item) => [item.externalId, item]));
+  for (const classification of classifications) {
+    const item = itemsByExternalId.get(classification.externalId);
+    if (!item) continue;
+
+    const rows = await d.select<{ id: number }[]>(
+      `SELECT id FROM library_items
+       WHERE source = $1 AND external_id = $2 AND item_type = $3
+       LIMIT 1`,
+      [item.source, item.externalId, item.itemType]
+    );
+    const itemId = rows[0]?.id;
+    if (!itemId) continue;
+
+    await d.execute(
+      `INSERT INTO llm_classifications
+        (item_id, category, suggested_tags_json, reason, confidence,
+         suggested_action_kind, suggested_action_target, provenance, provider, model, analysis_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        itemId,
+        classification.category,
+        JSON.stringify(classification.suggestedTags),
+        classification.reason,
+        classification.confidence,
+        classification.suggestedAction?.kind ?? null,
+        classification.suggestedAction?.target ?? null,
+        classification.provenance,
+        classification.provider,
+        classification.model,
+        classification.analysisAt,
+      ]
+    );
+
+    for (const tag of classification.suggestedTags) {
+      const trimmed = tag.trim();
+      if (!trimmed) continue;
+
+      await d.execute(
+        "INSERT OR IGNORE INTO library_tags (name, source) VALUES ($1, $2)",
+        [trimmed, classification.provenance === "llm" ? "llm" : "metadata"]
+      );
+      const tagRows = await d.select<{ id: number }[]>(
+        "SELECT id FROM library_tags WHERE name = $1 LIMIT 1",
+        [trimmed]
+      );
+      const tagId = tagRows[0]?.id;
+      if (!tagId) continue;
+
+      await d.execute(
+        `INSERT INTO library_item_tags (item_id, tag_id, confidence, reason)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(item_id, tag_id) DO UPDATE SET
+          confidence = excluded.confidence,
+          reason = excluded.reason`,
+        [itemId, tagId, classification.confidence, classification.reason]
+      );
+    }
+  }
 }
 
 export async function saveLlmAnalysis(

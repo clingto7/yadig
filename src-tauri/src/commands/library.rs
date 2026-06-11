@@ -9,8 +9,9 @@ use crate::library::{
     OperationPlan, OperationPlanItem, OperationPlanKind,
 };
 use crate::llm::{
-    analyze_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
-    LlmProviderConfig, LlmProviderTestError, LlmProviderTestResult,
+    analyze_items, classify_items, test_llm_provider, LlmAnalysisResponse, LlmAnalyzeItemsRequest,
+    LlmClassificationResponse, LlmClassifyItemsRequest, LlmProviderConfig, LlmProviderTestError,
+    LlmProviderTestResult,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -33,6 +34,13 @@ pub async fn bili_sync_library(
 #[tauri::command]
 pub async fn llm_analyze_items(request: LlmAnalyzeItemsRequest) -> Result<LlmAnalysisResponse> {
     analyze_items(request).await
+}
+
+#[tauri::command]
+pub async fn llm_classify_items(
+    request: LlmClassifyItemsRequest,
+) -> Result<LlmClassificationResponse> {
+    classify_items(request).await
 }
 
 #[tauri::command]

@@ -6,17 +6,18 @@ import {
   type FavoriteOperationAction,
   type LibraryCollection,
   type LibraryItem,
-  type LlmItemAnalysis,
+  type LlmClassificationItem,
+  type LlmClassificationMode,
   type OperationPlan,
   type OperationPlanItemStatus,
 } from "@/lib/tauri";
 import {
   listFavoriteOperationCandidates,
   listBiliFavoriteOperationPlanHistory,
-  listLatestLlmAnalyses,
+  listLatestLlmClassifications,
   listLibraryCollections,
   listLibraryItemsWithCollections,
-  saveLlmAnalysis,
+  saveLlmClassifications,
   saveOperationPlan,
   updateBiliFavoriteDeleteMemberships,
   updateBiliFavoriteMoveMemberships,
@@ -58,10 +59,10 @@ function itemTypeLabel(type: LibraryItem["itemType"]) {
   }
 }
 
-function isMusicSuggestion(analysis?: LlmItemAnalysis) {
+function isMusicSuggestion(analysis?: LlmClassificationItem) {
   return Boolean(
     analysis?.suggestedTags.some((tag) => tag.includes("音乐"))
-    || analysis?.suggestedAction?.kind === "extract_audio"
+    || analysis?.category.toLowerCase().includes("music")
   );
 }
 
@@ -104,7 +105,7 @@ export function WorkstationPage() {
   const [selectedFolderId, setSelectedFolderId] = useState<string>("all");
   const [selectedFavoriteIds, setSelectedFavoriteIds] = useState<Set<string>>(() => new Set());
   const [targetFolderId, setTargetFolderId] = useState<string>("");
-  const [analyses, setAnalyses] = useState<LlmItemAnalysis[]>([]);
+  const [classifications, setClassifications] = useState<LlmClassificationItem[]>([]);
   const [plan, setPlan] = useState<OperationPlan | null>(null);
   const [operationHistory, setOperationHistory] = useState<OperationPlanHistoryEntry[]>([]);
   const [selectedHistoryPlanId, setSelectedHistoryPlanId] = useState<number | null>(null);
@@ -113,8 +114,8 @@ export function WorkstationPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   const analysisById = useMemo(() => {
-    return new Map(analyses.map((analysis) => [analysis.externalId, analysis]));
-  }, [analyses]);
+    return new Map(classifications.map((analysis) => [analysis.externalId, analysis]));
+  }, [classifications]);
 
   const visibleItems = useMemo(() => {
     const typeFilteredItems =
@@ -151,6 +152,8 @@ export function WorkstationPage() {
         .map((item) => item.externalId)
     );
   }, [visibleItems]);
+
+  const visibleFavoriteCount = favoriteVisibleIds.size;
 
   const planStatusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -196,14 +199,14 @@ export function WorkstationPage() {
     Promise.all([
       listLibraryItemsWithCollections(),
       listLibraryCollections("bili_favorite_folder"),
-      listLatestLlmAnalyses(),
+      listLatestLlmClassifications(),
       listBiliFavoriteOperationPlanHistory(20),
     ])
       .then(([storedItems, storedFolders, storedAnalyses, storedHistory]) => {
         if (!cancelled) {
           setItems(storedItems);
           setFavoriteFolders(storedFolders);
-          setAnalyses(storedAnalyses);
+          setClassifications(storedAnalyses);
           setOperationHistory(storedHistory);
           setSelectedHistoryPlanId(storedHistory[0]?.id ?? null);
         }
@@ -243,7 +246,7 @@ export function WorkstationPage() {
       setSelectedFolderId("all");
       setSelectedFavoriteIds(new Set());
       setTargetFolderId("");
-      setAnalyses([]);
+      setClassifications([]);
       setMessage(`Synced and saved ${result.items.length} Bilibili resources.`);
     } catch (err) {
       setMessage(safeErrorMessage("Sync failed", err));
@@ -252,35 +255,60 @@ export function WorkstationPage() {
     }
   }
 
-  async function analyzeMetadata() {
-    setBusy("analyze");
+  function classificationInputItems() {
+    const favoriteItems = visibleItems.filter((item) => item.itemType === "bili_favorite_video");
+    if (selectedFavoriteIds.size === 0) return favoriteItems;
+    return favoriteItems.filter((item) => selectedFavoriteIds.has(item.externalId));
+  }
+
+  async function classifyFavorites(mode: LlmClassificationMode) {
+    const classificationItems = classificationInputItems();
+    if (classificationItems.length === 0) {
+      setMessage("Choose favorite items before classification.");
+      return;
+    }
+
+    setBusy(mode === "llm" ? "classify-llm" : "classify-local");
     setMessage(null);
     try {
-      const store = await Store.load("settings.json");
-      const provider = {
-        provider: (await store.get<string>("llm_provider")) ?? DEFAULT_LLM_PROVIDER,
-        baseUrl: (await store.get<string>("llm_base_url")) ?? DEFAULT_LLM_BASE_URL,
-        apiKey: (await store.get<string>("llm_api_key")) ?? null,
-        model: (await store.get<string>("llm_model")) ?? DEFAULT_LLM_MODEL,
-      };
-      const result = await tauri.llmAnalyzeItems({
+      const provider = mode === "llm"
+        ? await loadLlmProvider()
+        : null;
+      const result = await tauri.llmClassifyItems({
         instruction,
-        items,
+        items: classificationItems,
         provider,
+        mode,
       });
-      await saveLlmAnalysis(instruction, provider, items, result.items);
-      setAnalyses(result.items);
+      await saveLlmClassifications(classificationItems, result.items);
+      const storedClassifications = await listLatestLlmClassifications();
+      setClassifications(storedClassifications);
       setPlan(null);
+      const failedCount = result.chunkFailures.length;
+      const sourceLabel = mode === "llm" ? "LLM" : "local metadata";
+      const firstFailure = result.chunkFailures[0];
       setMessage(
-        result.warning
-          ? `Analyzed ${result.items.length} resources with local metadata fallback. ${result.warning}`
-          : `Analyzed ${result.items.length} resources with LLM and saved suggested tags.`
+        `${sourceLabel} classified ${result.items.length}/${classificationItems.length} favorite items${
+          firstFailure
+            ? `; ${failedCount} chunk${failedCount === 1 ? "" : "s"} failed: ${firstFailure.error}`
+            : "."
+        }`
       );
     } catch (err) {
-      setMessage(safeErrorMessage("Analysis failed", err));
+      setMessage(safeErrorMessage("Classification failed", err));
     } finally {
       setBusy(null);
     }
+  }
+
+  async function loadLlmProvider() {
+    const store = await Store.load("settings.json");
+    return {
+      provider: (await store.get<string>("llm_provider")) ?? DEFAULT_LLM_PROVIDER,
+      baseUrl: (await store.get<string>("llm_base_url")) ?? DEFAULT_LLM_BASE_URL,
+      apiKey: (await store.get<string>("llm_api_key")) ?? null,
+      model: (await store.get<string>("llm_model")) ?? DEFAULT_LLM_MODEL,
+    };
   }
 
   async function createAudioPlan() {
@@ -493,20 +521,30 @@ export function WorkstationPage() {
             </div>
 
             <div className="rounded-lg border border-border bg-card p-4">
-              <h3 className="font-semibold">AI Metadata Task</h3>
+              <h3 className="font-semibold">Classification Task</h3>
               <textarea
                 value={instruction}
                 onChange={(event) => setInstruction(event.target.value)}
                 className="mt-3 min-h-28 w-full rounded-md border border-input bg-background p-3 text-sm focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
               />
-              <button
-                onClick={analyzeMetadata}
-                disabled={busy !== null || items.length === 0}
-                className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                <Brain className="h-4 w-4" />
-                {busy === "analyze" ? "Analyzing" : "Analyze Metadata"}
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={() => void classifyFavorites("llm")}
+                  disabled={busy !== null || visibleFavoriteCount === 0}
+                  className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  <Brain className="h-4 w-4" />
+                  {busy === "classify-llm" ? "Classifying" : "Classify with LLM"}
+                </button>
+                <button
+                  onClick={() => void classifyFavorites("local_metadata")}
+                  disabled={busy !== null || visibleFavoriteCount === 0}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-4 text-sm hover:bg-secondary disabled:opacity-50"
+                >
+                  <Tags className="h-4 w-4" />
+                  {busy === "classify-local" ? "Classifying" : "Local Metadata"}
+                </button>
+              </div>
             </div>
 
             <div className="rounded-lg border border-border bg-card p-4">
@@ -517,7 +555,7 @@ export function WorkstationPage() {
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   onClick={createAudioPlan}
-                  disabled={busy !== null || analyses.length === 0}
+                  disabled={busy !== null || classifications.length === 0}
                   className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm hover:bg-secondary disabled:opacity-50"
                 >
                   <Tags className="h-4 w-4" />
@@ -821,6 +859,11 @@ export function WorkstationPage() {
                             Music candidate
                           </span>
                         )}
+                        {analysis && (
+                          <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
+                            {analysis.provenance === "llm" ? "LLM" : "Local metadata"}
+                          </span>
+                        )}
                       </div>
                       <h4 className="mt-2 font-medium">{item.title}</h4>
                       <p className="mt-1 text-sm text-muted-foreground">
@@ -830,6 +873,17 @@ export function WorkstationPage() {
                     <div className="text-sm text-muted-foreground">
                       {analysis ? (
                         <>
+                          <div className="mb-2 flex flex-wrap gap-1">
+                            <span className="rounded bg-secondary px-2 py-0.5 text-xs">
+                              {analysis.category}
+                            </span>
+                            {analysis.suggestedAction && (
+                              <span className="rounded bg-secondary px-2 py-0.5 text-xs">
+                                {analysis.suggestedAction.kind}
+                                {analysis.suggestedAction.target ? ` -> ${analysis.suggestedAction.target}` : ""}
+                              </span>
+                            )}
+                          </div>
                           <div className="flex flex-wrap gap-1">
                             {analysis.suggestedTags.map((tag) => (
                               <span key={tag} className="rounded bg-secondary px-2 py-0.5 text-xs">
@@ -839,6 +893,9 @@ export function WorkstationPage() {
                           </div>
                           <p className="mt-2">{analysis.reason}</p>
                           <p className="mt-1 text-xs">Confidence {(analysis.confidence * 100).toFixed(0)}%</p>
+                          <p className="mt-1 text-xs">
+                            {analysis.provenance === "llm" ? `${analysis.provider} · ${analysis.model}` : "Local metadata"}
+                          </p>
                         </>
                       ) : (
                         "No AI suggestion yet."

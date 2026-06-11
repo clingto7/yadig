@@ -84,8 +84,13 @@ export interface LlmSuggestedAction {
   target: string | null;
 }
 
+export type LlmClassificationProvenance = "llm" | "local_metadata";
+
+export type LlmClassificationMode = "llm" | "local_metadata";
+
 export interface LlmItemAnalysis {
   externalId: string;
+  category?: string | null;
   suggestedTags: string[];
   reason: string;
   confidence: number;
@@ -102,6 +107,37 @@ export interface LlmAnalyzeItemsRequest {
   instruction: string;
   items: LibraryItem[];
   provider: LlmProviderConfig | null;
+}
+
+export interface LlmClassifyItemsRequest {
+  instruction: string;
+  items: LibraryItem[];
+  provider: LlmProviderConfig | null;
+  mode: LlmClassificationMode;
+}
+
+export interface LlmClassificationItem {
+  externalId: string;
+  category: string;
+  suggestedTags: string[];
+  reason: string;
+  confidence: number;
+  suggestedAction: LlmSuggestedAction | null;
+  provenance: LlmClassificationProvenance;
+  provider: string;
+  model: string;
+  analysisAt: string;
+}
+
+export interface LlmClassificationChunkFailure {
+  chunkIndex: number;
+  itemExternalIds: string[];
+  error: string;
+}
+
+export interface LlmClassificationResponse {
+  items: LlmClassificationItem[];
+  chunkFailures: LlmClassificationChunkFailure[];
 }
 
 export type LlmProviderTestErrorKind =
@@ -268,6 +304,9 @@ export const tauri = {
 
   llmAnalyzeItems: (request: LlmAnalyzeItemsRequest): Promise<LlmAnalysisResponse> =>
     invoke("llm_analyze_items", { request }),
+
+  llmClassifyItems: (request: LlmClassifyItemsRequest): Promise<LlmClassificationResponse> =>
+    invoke("llm_classify_items", { request }),
 
   llmTestProvider: (provider: LlmProviderConfig): Promise<LlmProviderTestResult> =>
     invoke("llm_test_provider", { provider }),
