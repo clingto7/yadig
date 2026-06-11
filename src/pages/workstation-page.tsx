@@ -17,6 +17,7 @@ import {
   uniqueSuggestedTargets,
   type ClassificationReviewFilters,
 } from "@/lib/classification-review";
+import { CHECKBOX_CLASS_NAME } from "@/lib/ui-style";
 import {
   tauri,
   type FavoriteOperationAction,
@@ -1206,7 +1207,7 @@ export function WorkstationPage() {
                             type="checkbox"
                             checked={selectedFavoriteIds.has(item.externalId)}
                             onChange={() => toggleFavoriteSelection(item.externalId)}
-                            className="h-4 w-4"
+                            className={CHECKBOX_CLASS_NAME}
                             aria-label={`Select ${item.title}`}
                           />
                         )}
