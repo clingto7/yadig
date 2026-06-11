@@ -15,6 +15,9 @@ use crate::library::{
 use std::collections::BTreeMap;
 use tokio::sync::Mutex;
 
+const SEASON_ARCHIVES_PAGE_SIZE: u32 = 100;
+const MAX_SEASON_ARCHIVES_PAGES: u32 = 200;
+
 /// Bilibili API client. Handles HTTP requests, auth cookies, and response parsing.
 pub struct BiliClient {
     http: reqwest::Client,
@@ -921,29 +924,53 @@ impl BiliClient {
 
     /// Fetch all videos in a collection (合集).
     pub async fn season_archives(&self, mid: i64, season_id: i64) -> Result<SeasonArchives> {
-        let url = format!(
-            "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid={}&season_id={}&page_num=1&page_size=100",
-            mid, season_id
-        );
-        let resp =
-            self.request(&url).send().await.map_err(|e| {
+        let mut combined: Option<SeasonArchives> = None;
+
+        for page_num in 1..=MAX_SEASON_ARCHIVES_PAGES {
+            let url = season_archives_page_url(mid, season_id, page_num, SEASON_ARCHIVES_PAGE_SIZE);
+            let resp = self.request(&url).send().await.map_err(|e| {
                 YadigError::Network(format!("season_archives request failed: {}", e))
             })?;
 
-        let body: BiliResponse<SeasonArchives> = resp
-            .json()
-            .await
-            .map_err(|e| YadigError::Network(format!("season_archives parse error: {}", e)))?;
+            let body: BiliResponse<SeasonArchives> = resp
+                .json()
+                .await
+                .map_err(|e| YadigError::Network(format!("season_archives parse error: {}", e)))?;
 
-        if body.code != 0 {
-            return Err(YadigError::Network(format!(
-                "season_archives API error ({}): {}",
-                body.code, body.message
-            )));
+            if body.code != 0 {
+                return Err(YadigError::Network(format!(
+                    "season_archives API error ({}): {}",
+                    body.code, body.message
+                )));
+            }
+
+            let page = body
+                .data
+                .ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))?;
+            let page_archive_count = page.archives.len();
+            let total = page.meta.total;
+
+            if let Some(existing) = &mut combined {
+                merge_season_archives_page(existing, page);
+            } else {
+                combined = Some(page);
+            }
+
+            let loaded = combined
+                .as_ref()
+                .map(|season| season.archives.len())
+                .unwrap_or_default();
+            if !season_archives_has_more(
+                loaded,
+                total,
+                page_archive_count,
+                SEASON_ARCHIVES_PAGE_SIZE as usize,
+            ) {
+                break;
+            }
         }
 
-        body.data
-            .ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))
+        combined.ok_or_else(|| YadigError::NotFound("season_archives returned no data".into()))
     }
 
     /// Extract audio from a collection (合集) — enumerates all videos and downloads each.
@@ -1127,6 +1154,33 @@ fn make_download_filename(title: &str, part: Option<&str>, ext: &str) -> String 
     } else {
         filename
     }
+}
+
+fn season_archives_page_url(mid: i64, season_id: i64, page_num: u32, page_size: u32) -> String {
+    format!(
+        "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid={mid}&season_id={season_id}&page_num={page_num}&page_size={page_size}"
+    )
+}
+
+fn season_archives_has_more(
+    loaded_count: usize,
+    total: u32,
+    last_page_count: usize,
+    page_size: usize,
+) -> bool {
+    if last_page_count == 0 {
+        return false;
+    }
+    if total > 0 {
+        return loaded_count < total as usize;
+    }
+    last_page_count >= page_size
+}
+
+fn merge_season_archives_page(target: &mut SeasonArchives, page: SeasonArchives) {
+    target.aids.extend(page.aids);
+    target.archives.extend(page.archives);
+    target.meta.total = target.meta.total.max(page.meta.total);
 }
 
 fn session_cookie(session: &crate::bili::auth::BiliSession) -> String {
@@ -1438,6 +1492,65 @@ mod tests {
         let part = sanitize_filename("Track 1/2");
         let filename = format!("{} - {}.m4a", title, part);
         assert_eq!(filename, "Album_ Vol. 1 - Track 1_2.m4a");
+    }
+
+    #[test]
+    fn builds_season_archives_page_url() {
+        let url = season_archives_page_url(37737161, 1227671, 2, 50);
+
+        assert_eq!(
+            url,
+            "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=37737161&season_id=1227671&page_num=2&page_size=50"
+        );
+    }
+
+    #[test]
+    fn detects_more_collection_pages_from_total() {
+        assert!(season_archives_has_more(100, 250, 100, 100));
+        assert!(season_archives_has_more(200, 250, 100, 100));
+        assert!(!season_archives_has_more(250, 250, 50, 100));
+        assert!(!season_archives_has_more(100, 250, 0, 100));
+    }
+
+    #[test]
+    fn merges_collection_archive_pages() {
+        let mut first = SeasonArchives {
+            aids: vec![1],
+            archives: vec![SeasonArchive {
+                aid: 1,
+                bvid: "BV1".to_string(),
+                title: "Episode 1".to_string(),
+                duration: 60,
+            }],
+            meta: SeasonMeta {
+                name: "Collection".to_string(),
+                mid: 37737161,
+                season_id: 1227671,
+                total: 2,
+            },
+        };
+        let second = SeasonArchives {
+            aids: vec![2],
+            archives: vec![SeasonArchive {
+                aid: 2,
+                bvid: "BV2".to_string(),
+                title: "Episode 2".to_string(),
+                duration: 90,
+            }],
+            meta: SeasonMeta {
+                name: "Collection".to_string(),
+                mid: 37737161,
+                season_id: 1227671,
+                total: 2,
+            },
+        };
+
+        merge_season_archives_page(&mut first, second);
+
+        assert_eq!(first.aids, vec![1, 2]);
+        assert_eq!(first.archives.len(), 2);
+        assert_eq!(first.archives[1].bvid, "BV2");
+        assert_eq!(first.meta.total, 2);
     }
 
     #[test]
