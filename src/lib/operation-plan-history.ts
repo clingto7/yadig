@@ -69,7 +69,6 @@ export function sanitizeOperationError(error: string | null | undefined): string
   if (!error) return null;
 
   const sanitized = error
-    .replace(/SESSDATA\s*=\s*[^;\s,)]+/gi, "SESSDATA=[redacted]")
     .replace(/bili_jct\s*=\s*[^;\s,)]+/gi, "bili_jct=[redacted]")
     .replace(/DedeUserID\s*=\s*\d+/gi, "DedeUserID=[redacted]")
     .replace(/https?:\/\/[^\s,)]+callback[^\s,)]+/gi, "[redacted callback URL]")
