@@ -1,0 +1,154 @@
+name: ocr-review
+
+# Low-spec big-brother: push-driven commit-range review on the tracked
+# branch, publishing an advisory GitHub Commit Status (mirrors the
+# big-brother ADR-0012 delivery surface with context `ocr/review`).
+#
+# Required repository configuration (Settings -> Secrets and variables ->
+# Actions):
+#   secret  OCR_LLM_URL       LLM API endpoint URL
+#   secret  OCR_LLM_TOKEN     LLM auth token
+#   var     OCR_LLM_MODEL     model name
+#   var     OCR_LLM_PROTOCOL  anthropic | openai | openai-responses
+#
+# The status is advisory: it never blocks a push unless someone manually
+# adds `ocr/review` as a required status check in branch protection.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  # Serialize reviews per branch. Do NOT cancel in progress: each push
+  # reviews its own before..after range, so cancelling a superseded run
+  # would silently drop that push's coverage.
+  group: ocr-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve review range
+        id: range
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          Z=0000000000000000000000000000000000000000
+          if [ "$AFTER" = "$Z" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "sha=$AFTER" >> "$GITHUB_OUTPUT"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "$Z" ]; then
+            # New branch or unavailable previous tip: review the single
+            # head commit instead of a range.
+            echo "mode=commit" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=range" >> "$GITHUB_OUTPUT"
+            echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout (full history for range diffs)
+        if: steps.range.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install OCR
+        if: steps.range.outputs.skip != 'true'
+        run: npm install -g @alibaba-group/open-code-review@1.12.4
+
+      - name: Run review
+        id: review
+        if: steps.range.outputs.skip != 'true'
+        env:
+          OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+          OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
+          OCR_LLM_PROTOCOL: ${{ vars.OCR_LLM_PROTOCOL }}
+        run: |
+          set -euo pipefail
+          # An empty protocol variable must behave as unset for the CLI.
+          if [ -z "${OCR_LLM_PROTOCOL:-}" ]; then unset OCR_LLM_PROTOCOL || true; fi
+          MODE="${{ steps.range.outputs.mode }}"
+          SHA="${{ steps.range.outputs.sha }}"
+          BEFORE="${{ steps.range.outputs.before }}"
+          if [ "$MODE" = "range" ]; then
+            ocr review --from "$BEFORE" --to "$SHA" \
+              --format json --output /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
+          else
+            ocr review --commit "$SHA" \
+              --format json --output /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
+          fi
+
+      - name: Post advisory commit status and summary
+        if: always() && steps.range.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.range.outputs.sha }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          post_status() {
+            gh api "repos/$REPO/statuses/$SHA" \
+              -f state="$1" -f context='ocr/review' \
+              -f description="$2" -f target_url="$RUN_URL"
+          }
+          desc_tail() { tail -c 120 /tmp/ocr-stderr.log 2>/dev/null | tr '\n' ' ' || true; }
+
+          if [ "$REVIEW_OUTCOME" != "success" ] || [ ! -s /tmp/ocr-result.json ]; then
+            post_status error "ocr review failed: $(desc_tail)"
+            {
+              echo "## OCR review — error"
+              echo '```'
+              tail -c 2000 /tmp/ocr-stderr.log 2>/dev/null || echo "no stderr captured"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TOTAL=$(jq '.comments | length' /tmp/ocr-result.json)
+          C=$(jq '[.comments[] | select(.severity=="critical")] | length' /tmp/ocr-result.json)
+          H=$(jq '[.comments[] | select(.severity=="high")] | length' /tmp/ocr-result.json)
+          M=$(jq '[.comments[] | select(.severity=="medium")] | length' /tmp/ocr-result.json)
+          L=$(jq '[.comments[] | select(.severity=="low")] | length' /tmp/ocr-result.json)
+          DESC="ocr: $TOTAL findings ($C critical, $H high, $M medium, $L low)"
+
+          if [ $((C + H)) -gt 0 ]; then STATE=failure; else STATE=success; fi
+          post_status "$STATE" "$DESC"
+
+          {
+            echo "## OCR review"
+            echo "- Commit: \`$SHA\`"
+            echo "- Status: **$STATE** — $DESC"
+            echo
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "| Severity | Category | Location | Finding |"
+              echo "|---|---|---|---|"
+              jq -r '.comments[] | "| \(.severity // "n/a") | \(.category // "n/a") | \(.path):\(.start_line // "?") | \((.content // "") | split("\n")[0] | .[0:120]) |"' \
+                /tmp/ocr-result.json
+            else
+              echo "No findings."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review artifacts
+        if: always() && steps.range.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-result-${{ steps.range.outputs.sha }}
+          path: |
+            /tmp/ocr-result.json
+            /tmp/ocr-stderr.log
+          if-no-files-found: ignore
+          retention-days: 30
