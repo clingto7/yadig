@@ -37,7 +37,10 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must comfortably exceed several sequential 900s LLM completions
+    # plus install and checkout, or a timeout kills the job before the
+    # status-posting step can run.
+    timeout-minutes: 60
     steps:
       - name: Resolve review range
         id: range
