@@ -99,6 +99,7 @@ jobs:
             echo "::warning::previous tip $BEFORE not present locally; falling back to single-commit review"
             MODE=commit
           fi
+          set +e
           if [ "$MODE" = "range" ]; then
             ocr review --from "$BEFORE" --to "$SHA" \
               --format json --output /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
@@ -106,6 +107,30 @@ jobs:
             ocr review --commit "$SHA" \
               --format json --output /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
           fi
+          OCR_EXIT=$?
+          set -e
+          # Redact secret material from stderr immediately, while this step
+          # (which already holds the secrets) is its only consumer, so later
+          # steps never need the secrets in their environment. Literal
+          # replacement only: python str.replace treats the values as plain
+          # text, unlike sed, where regex metacharacters in a secret would
+          # silently break the redaction.
+          python3 - <<'PY'
+          import os, sys
+          url = os.environ.get("OCR_LLM_URL", "")
+          tok = os.environ.get("OCR_LLM_TOKEN", "")
+          try:
+              s = open("/tmp/ocr-stderr.log", encoding="utf-8", errors="replace").read()
+          except FileNotFoundError:
+              sys.exit(0)
+          if url:
+              s = s.replace(url, "[redacted-url]")
+          if tok:
+              s = s.replace(tok, "[redacted-token]")
+          open("/tmp/ocr-stderr.sanitized.log", "w", encoding="utf-8").write(s)
+          PY
+          echo "mode_actual=$MODE" >> "$GITHUB_OUTPUT"
+          exit "$OCR_EXIT"
 
       - name: Post advisory commit status and summary
         if: always() && steps.range.outputs.skip != 'true'
@@ -115,8 +140,8 @@ jobs:
           SHA: ${{ steps.range.outputs.sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
-          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+          MODE_ACTUAL: ${{ steps.review.outputs.mode_actual }}
+          RANGE_MODE: ${{ steps.range.outputs.mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -125,16 +150,9 @@ jobs:
               -f state="$1" -f context='ocr/review' \
               -f description="$2" -f target_url="$RUN_URL"
           }
-          # Redact secret material from stderr before it reaches any
-          # summary or artifact.
-          sanitize_stderr() {
-            sed -e "s|$OCR_LLM_URL|[redacted-url]|g" \
-                -e "s|$OCR_LLM_TOKEN|[redacted-token]|g" \
-                /tmp/ocr-stderr.log 2>/dev/null > /tmp/ocr-stderr.sanitized.log || true
-          }
+          # The sanitized stderr is produced by the review step; this step
+          # deliberately holds no secrets.
           desc_tail() { tail -c 120 /tmp/ocr-stderr.sanitized.log 2>/dev/null | tr '\n' ' ' || true; }
-
-          sanitize_stderr
 
           if [ "$REVIEW_OUTCOME" != "success" ] || [ ! -s /tmp/ocr-result.json ]; then
             post_status error "ocr review failed: $(desc_tail)"
@@ -163,6 +181,11 @@ jobs:
           M=$(jq '[.comments[] | select(.severity=="medium")] | length' /tmp/ocr-result.json)
           L=$(jq '[.comments[] | select(.severity=="low")] | length' /tmp/ocr-result.json)
           DESC="ocr: $TOTAL findings ($C critical, $H high, $M medium, $L low)"
+          # Surface degraded coverage on the status itself: a force-push
+          # fallback reviewed only the head commit, not the full range.
+          if [ "$RANGE_MODE" = "range" ] && [ "${MODE_ACTUAL:-}" = "commit" ]; then
+            DESC="$DESC [single-commit fallback]"
+          fi
 
           if [ $((C + H)) -gt 0 ]; then STATE=failure; else STATE=success; fi
           post_status "$STATE" "$DESC"
@@ -175,9 +198,11 @@ jobs:
             if [ "$TOTAL" -gt 0 ]; then
               echo "| Severity | Category | Location | Finding |"
               echo "|---|---|---|---|"
-              # Escape pipes so LLM-generated content cannot break the
-              # markdown table; first line only.
-              jq -r '.comments[] | (.severity // "n/a") as $s | (.category // "n/a") as $c | (.path // "?") as $p | ((.start_line // "?") | tostring) as $l | ((.content // "") | split("\n")[0] | gsub("\\|"; "\\|") | .[0:120]) as $t | "| \($s) | \($c) | \($p):\($l) | \($t) |"' \
+              # Escape pipes as HTML entities in every interpolated field
+              # (a backslash replacement in gsub is itself escape-ambiguous
+              # across jq versions; &#124; renders correctly in GitHub
+              # markdown tables).
+              jq -r '.comments[] | ((.severity // "n/a") | gsub("\\|"; "&#124;")) as $s | ((.category // "n/a") | gsub("\\|"; "&#124;")) as $c | ((.path // "?") | gsub("\\|"; "&#124;")) as $p | ((.start_line // "?") | tostring) as $l | ((.content // "") | split("\n")[0] | gsub("\\|"; "&#124;") | .[0:120]) as $t | "| \($s) | \($c) | \($p):\($l) | \($t) |"' \
                 /tmp/ocr-result.json
             else
               echo "No findings."
