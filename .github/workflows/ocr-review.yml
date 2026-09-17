@@ -13,6 +13,11 @@ name: ocr-review
 #
 # The status is advisory: it never blocks a push unless someone manually
 # adds `ocr/review` as a required status check in branch protection.
+#
+# Supply-chain note: this workflow executes the third-party npm package
+# @alibaba-group/open-code-review with access to the LLM secrets. The
+# exact version pin below is deliberate; raising it is a reviewed change,
+# not a chore.
 
 on:
   push:
@@ -39,6 +44,7 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
+        shell: bash
         run: |
           set -euo pipefail
           Z=0000000000000000000000000000000000000000
@@ -64,6 +70,7 @@ jobs:
 
       - name: Install OCR
         if: steps.range.outputs.skip != 'true'
+        shell: bash
         run: npm install -g @alibaba-group/open-code-review@1.12.4
 
       - name: Run review
@@ -74,13 +81,24 @@ jobs:
           OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
           OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
           OCR_LLM_PROTOCOL: ${{ vars.OCR_LLM_PROTOCOL }}
+          RANGE_MODE: ${{ steps.range.outputs.mode }}
+          RANGE_SHA: ${{ steps.range.outputs.sha }}
+          RANGE_BEFORE: ${{ steps.range.outputs.before }}
+        shell: bash
         run: |
           set -euo pipefail
           # An empty protocol variable must behave as unset for the CLI.
           if [ -z "${OCR_LLM_PROTOCOL:-}" ]; then unset OCR_LLM_PROTOCOL || true; fi
-          MODE="${{ steps.range.outputs.mode }}"
-          SHA="${{ steps.range.outputs.sha }}"
-          BEFORE="${{ steps.range.outputs.before }}"
+          MODE="$RANGE_MODE"
+          SHA="$RANGE_SHA"
+          BEFORE="${RANGE_BEFORE:-}"
+          # A force push can orphan the recorded previous tip: it is absent
+          # from the clone even at fetch-depth 0. Fall back to reviewing
+          # the single head commit rather than failing the whole run.
+          if [ "$MODE" = "range" ] && ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "::warning::previous tip $BEFORE not present locally; falling back to single-commit review"
+            MODE=commit
+          fi
           if [ "$MODE" = "range" ]; then
             ocr review --from "$BEFORE" --to "$SHA" \
               --format json --output /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
@@ -97,6 +115,9 @@ jobs:
           SHA: ${{ steps.range.outputs.sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
           post_status() {
@@ -104,16 +125,35 @@ jobs:
               -f state="$1" -f context='ocr/review' \
               -f description="$2" -f target_url="$RUN_URL"
           }
-          desc_tail() { tail -c 120 /tmp/ocr-stderr.log 2>/dev/null | tr '\n' ' ' || true; }
+          # Redact secret material from stderr before it reaches any
+          # summary or artifact.
+          sanitize_stderr() {
+            sed -e "s|$OCR_LLM_URL|[redacted-url]|g" \
+                -e "s|$OCR_LLM_TOKEN|[redacted-token]|g" \
+                /tmp/ocr-stderr.log 2>/dev/null > /tmp/ocr-stderr.sanitized.log || true
+          }
+          desc_tail() { tail -c 120 /tmp/ocr-stderr.sanitized.log 2>/dev/null | tr '\n' ' ' || true; }
+
+          sanitize_stderr
 
           if [ "$REVIEW_OUTCOME" != "success" ] || [ ! -s /tmp/ocr-result.json ]; then
             post_status error "ocr review failed: $(desc_tail)"
             {
               echo "## OCR review — error"
               echo '```'
-              tail -c 2000 /tmp/ocr-stderr.log 2>/dev/null || echo "no stderr captured"
+              tail -c 2000 /tmp/ocr-stderr.sanitized.log 2>/dev/null || echo "no stderr captured"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Schema guard: a result without a comments array is an error,
+          # not a clean review — otherwise schema drift would silently
+          # read as "0 findings" and post a false success.
+          if ! jq -e 'type == "object" and (.comments | type == "array")' \
+              /tmp/ocr-result.json >/dev/null 2>&1; then
+            post_status error "ocr result schema unexpected: $(desc_tail)"
+            echo "## OCR review — unexpected result schema" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -135,7 +175,9 @@ jobs:
             if [ "$TOTAL" -gt 0 ]; then
               echo "| Severity | Category | Location | Finding |"
               echo "|---|---|---|---|"
-              jq -r '.comments[] | "| \(.severity // "n/a") | \(.category // "n/a") | \(.path):\(.start_line // "?") | \((.content // "") | split("\n")[0] | .[0:120]) |"' \
+              # Escape pipes so LLM-generated content cannot break the
+              # markdown table; first line only.
+              jq -r '.comments[] | (.severity // "n/a") as $s | (.category // "n/a") as $c | (.path // "?") as $p | ((.start_line // "?") | tostring) as $l | ((.content // "") | split("\n")[0] | gsub("\\|"; "\\|") | .[0:120]) as $t | "| \($s) | \($c) | \($p):\($l) | \($t) |"' \
                 /tmp/ocr-result.json
             else
               echo "No findings."
@@ -149,6 +191,6 @@ jobs:
           name: ocr-result-${{ steps.range.outputs.sha }}
           path: |
             /tmp/ocr-result.json
-            /tmp/ocr-stderr.log
+            /tmp/ocr-stderr.sanitized.log
           if-no-files-found: ignore
           retention-days: 30
