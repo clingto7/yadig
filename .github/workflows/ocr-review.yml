@@ -109,27 +109,34 @@ jobs:
           fi
           OCR_EXIT=$?
           set -e
-          # Redact secret material from stderr immediately, while this step
-          # (which already holds the secrets) is its only consumer, so later
-          # steps never need the secrets in their environment. Literal
-          # replacement only: python str.replace treats the values as plain
-          # text, unlike sed, where regex metacharacters in a secret would
-          # silently break the redaction.
-          python3 - <<'PY'
+          echo "mode_actual=$MODE" >> "$GITHUB_OUTPUT"
+          # Redact secret material from stderr AND the result JSON (the
+          # model could echo endpoint details into its own comments), while
+          # this step — the only one holding the secrets — is their sole
+          # consumer. Literal replacement only: python str.replace treats
+          # the values as plain text, unlike sed regexes. Best-effort: a
+          # sanitizer failure must not mask the review's own exit code.
+          python3 - <<'PY' || true
           import os, sys
           url = os.environ.get("OCR_LLM_URL", "")
           tok = os.environ.get("OCR_LLM_TOKEN", "")
+          for path in ("/tmp/ocr-stderr.log", "/tmp/ocr-result.json"):
+              try:
+                  s = open(path, encoding="utf-8", errors="replace").read()
+              except FileNotFoundError:
+                  continue
+              if url:
+                  s = s.replace(url, "[redacted-url]")
+              if tok:
+                  s = s.replace(tok, "[redacted-token]")
+              open(path, "w", encoding="utf-8").write(s)
           try:
-              s = open("/tmp/ocr-stderr.log", encoding="utf-8", errors="replace").read()
-          except FileNotFoundError:
-              sys.exit(0)
-          if url:
-              s = s.replace(url, "[redacted-url]")
-          if tok:
-              s = s.replace(tok, "[redacted-token]")
-          open("/tmp/ocr-stderr.sanitized.log", "w", encoding="utf-8").write(s)
+              open("/tmp/ocr-stderr.sanitized.log", "w", encoding="utf-8").write(
+                  open("/tmp/ocr-stderr.log", encoding="utf-8", errors="replace").read()
+                  if os.path.exists("/tmp/ocr-stderr.log") else "")
+          except OSError:
+              pass
           PY
-          echo "mode_actual=$MODE" >> "$GITHUB_OUTPUT"
           exit "$OCR_EXIT"
 
       - name: Post advisory commit status and summary
@@ -202,7 +209,7 @@ jobs:
               # (a backslash replacement in gsub is itself escape-ambiguous
               # across jq versions; &#124; renders correctly in GitHub
               # markdown tables).
-              jq -r '.comments[] | ((.severity // "n/a") | gsub("\\|"; "&#124;")) as $s | ((.category // "n/a") | gsub("\\|"; "&#124;")) as $c | ((.path // "?") | gsub("\\|"; "&#124;")) as $p | ((.start_line // "?") | tostring) as $l | ((.content // "") | split("\n")[0] | gsub("\\|"; "&#124;") | .[0:120]) as $t | "| \($s) | \($c) | \($p):\($l) | \($t) |"' \
+              jq -r '.comments[] | ((.severity // "n/a") | gsub("\\|"; "&#124;")) as $s | ((.category // "n/a") | gsub("\\|"; "&#124;")) as $c | ((.path // "?") | gsub("\\|"; "&#124;")) as $p | ((.start_line // "?") | tostring) as $l | ((.content // "") | split("\n")[0] | .[0:120] | gsub("\\|"; "&#124;")) as $t | "| \($s) | \($c) | \($p):\($l) | \($t) |"' \
                 /tmp/ocr-result.json
             else
               echo "No findings."
