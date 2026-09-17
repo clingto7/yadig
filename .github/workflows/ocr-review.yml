@@ -81,6 +81,9 @@ jobs:
           OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
           OCR_LLM_MODEL: ${{ vars.OCR_LLM_MODEL }}
           OCR_LLM_PROTOCOL: ${{ vars.OCR_LLM_PROTOCOL }}
+          # GLM-5.x is a reasoning model: single completions can think past
+          # the 5-minute default deadline and fail the whole review.
+          OCR_LLM_TIMEOUT: "900"
           RANGE_MODE: ${{ steps.range.outputs.mode }}
           RANGE_SHA: ${{ steps.range.outputs.sha }}
           RANGE_BEFORE: ${{ steps.range.outputs.before }}
