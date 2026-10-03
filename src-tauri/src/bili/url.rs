@@ -22,7 +22,7 @@ pub enum BiliUrl {
 /// Parse a Bilibili URL into its components.
 /// Supports standard video URLs, short links, and collection URLs.
 pub fn parse_bilibili_url(url: &str) -> Result<BiliUrl> {
-    let url = url.trim();
+    let url = url;
 
     // Short link: b23.tv/xxx
     if url.contains("b23.tv") {
