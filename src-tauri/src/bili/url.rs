@@ -93,6 +93,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_video_url_with_surrounding_whitespace() {
+        let url = "  https://www.bilibili.com/video/BV1GJ411x7h7  \n";
+        let result = parse_bilibili_url(url).unwrap();
+        assert_eq!(
+            result,
+            BiliUrl::Video {
+                bvid: "BV1GJ411x7h7".to_string(),
+                page: None,
+            }
+        );
+    }
+
+    #[test]
     fn parse_video_url_with_page() {
         let url = "https://www.bilibili.com/video/BV1GJ411x7h7?p=2";
         let result = parse_bilibili_url(url).unwrap();
