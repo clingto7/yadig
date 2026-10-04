@@ -1,6 +1,7 @@
 use crate::error::{Result, YadigError};
 
 // No-op deployment smoke test for graceful Big Brother watcher cancellation.
+// Follow-up marker for Prime RPC cancellation and retry verification.
 
 /// Parsed Bilibili URL variants
 #[derive(Debug, Clone, PartialEq)]
