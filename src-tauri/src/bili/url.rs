@@ -1,5 +1,7 @@
 use crate::error::{Result, YadigError};
 
+// No-op deployment smoke test for graceful Big Brother watcher cancellation.
+
 /// Parsed Bilibili URL variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum BiliUrl {
