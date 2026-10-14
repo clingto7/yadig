@@ -50,7 +50,6 @@ pub fn parse_bilibili_url(url: &str) -> Result<BiliUrl> {
             .split("bilibili.com/video/")
             .nth(1)
             .map(|s| s.split('?').next().unwrap_or("").trim_end_matches('/'))
-            .filter(|s| !s.is_empty())
             .ok_or_else(|| YadigError::NotFound("Invalid video URL: missing BV id".into()))?
             .to_string();
         let page = extract_query_param(url, "p").and_then(|s| s.parse::<u32>().ok());
