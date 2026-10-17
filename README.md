@@ -14,3 +14,5 @@
 ## Delivery smoke (2026-10-17)
 
 Reviewed range for the Commit Status + Bark delivery smoke.
+
+Follow-up: verified the unwrapped synthesis surfaces (ADR 0030 smoke).
