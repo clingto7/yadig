@@ -10,3 +10,7 @@
 ## 详细规划
 
 见 [ROADMAP.md](./ROADMAP.md)
+
+## Delivery smoke (2026-10-17)
+
+Reviewed range for the Commit Status + Bark delivery smoke.
