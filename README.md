@@ -16,3 +16,5 @@
 Reviewed range for the Commit Status + Bark delivery smoke.
 
 Follow-up: verified the unwrapped synthesis surfaces (ADR 0030 smoke).
+
+Marker-contract verification range (ADR 0030 retry).
