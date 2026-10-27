@@ -24,3 +24,5 @@ Wake-carried marker contract range (ADR 0030 final check).
 ## Big Brother smoke (beta.23)
 
 End-to-end trigger commit for the enrolled review agent, 2026-10-27.
+
+Second trigger: the kernel PATH fix landed; this range should review for real.
