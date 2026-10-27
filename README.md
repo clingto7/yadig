@@ -20,3 +20,7 @@ Follow-up: verified the unwrapped synthesis surfaces (ADR 0030 smoke).
 Marker-contract verification range (ADR 0030 retry).
 
 Wake-carried marker contract range (ADR 0030 final check).
+
+## Big Brother smoke (beta.23)
+
+End-to-end trigger commit for the enrolled review agent, 2026-10-27.
