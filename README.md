@@ -27,4 +27,5 @@ End-to-end trigger commit for the enrolled review agent, 2026-10-27.
 
 Second trigger: the kernel PATH fix landed; this range should review for real.
 
-## Bark delivery check (pushed from the dev checkout, 2026-10-28)
+
+## just pure test
